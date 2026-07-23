@@ -1,0 +1,203 @@
+@import "tailwindcss";
+
+/*
+  TraceWorks design system
+  ------------------------------------------------------------
+  A warm "engineering instrument" look. One meaningful accent —
+  copper, the color of the traces the machine actually draws.
+  Blue = B.Cu layer, green = a live/connected controller.
+  Deliberately no decorative gradients: surfaces are flat paper,
+  hierarchy comes from ink weight, rules, and mono labels.
+*/
+
+@theme {
+  --color-ink: #17140d;
+  --color-ink-soft: #3a352a;
+  --color-muted: #6c6455;
+  --color-faint: #9a9483;
+
+  --color-paper: #ece7dc;
+  --color-panel: #f7f4ec;
+  --color-panel-2: #fcfaf4;
+  --color-well: #e4ded0;
+
+  --color-line: #d8d0be;
+  --color-line-strong: #c2b8a1;
+
+  --color-copper: #b4531f;
+  --color-copper-bright: #cf6320;
+  --color-fcu: #c2571f;
+  --color-bcu: #2c5f8c;
+  --color-signal: #2f7d55;
+  --color-warn: #a9791c;
+  --color-danger: #9d3a2c;
+
+  --font-sans: var(--font-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-plex), ui-monospace, "SF Mono", monospace;
+
+  --radius-panel: 4px;
+}
+
+* {
+  border-color: var(--color-line);
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv01";
+}
+
+/* graph-paper substrate, extremely subtle */
+.substrate {
+  background-image:
+    linear-gradient(to right, rgba(23, 20, 13, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(23, 20, 13, 0.035) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
+/* mono technical label */
+.tlabel {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+/* panel with engineering-drawing corner ticks */
+.panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  position: relative;
+}
+.panel-2 {
+  background: var(--color-panel-2);
+}
+
+/* crosshair corner marks, drawn on ::before/::after via bg */
+.ticked::before,
+.ticked::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-color: var(--color-line-strong);
+  pointer-events: none;
+}
+.ticked::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1px solid;
+  border-left: 1px solid;
+}
+.ticked::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 1px solid;
+  border-right: 1px solid;
+}
+
+/* buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.6rem 1.1rem;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease, transform 0.06s ease;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:active { transform: translateY(1px); }
+
+.btn-primary {
+  background: var(--color-ink);
+  color: var(--color-panel-2);
+  border-color: var(--color-ink);
+}
+.btn-primary:hover { background: #000; }
+
+.btn-copper {
+  background: var(--color-copper);
+  color: #fdf3ea;
+  border-color: var(--color-copper);
+}
+.btn-copper:hover { background: var(--color-copper-bright); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-ink);
+  border-color: var(--color-line-strong);
+}
+.btn-ghost:hover { background: var(--color-well); }
+
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* text input */
+.field {
+  width: 100%;
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-line-strong);
+  border-radius: 3px;
+  padding: 0.7rem 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--color-ink);
+  outline: none;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.field:focus {
+  border-color: var(--color-copper);
+  box-shadow: 0 0 0 3px rgba(180, 83, 31, 0.14);
+}
+.field::placeholder { color: var(--color-faint); }
+
+/* status dot */
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  display: inline-block;
+  flex: none;
+}
+.dot-live {
+  background: var(--color-signal);
+  box-shadow: 0 0 0 0 rgba(47, 125, 85, 0.5);
+  animation: pulse 2.4s infinite;
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(47, 125, 85, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(47, 125, 85, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(47, 125, 85, 0); }
+}
+
+/* thin animated trace draw for hero / previews */
+@keyframes trace-draw {
+  from { stroke-dashoffset: var(--len, 1000); }
+  to { stroke-dashoffset: 0; }
+}
+
+/* selection */
+::selection {
+  background: rgba(180, 83, 31, 0.22);
+}
+
+/* thin scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
