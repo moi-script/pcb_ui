@@ -1,14 +1,20 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 export default function Uploader() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
   const [file, setFile] = useState<string | null>(null);
   const [drag, setDrag] = useState(false);
 
   function pick(files: FileList | null) {
     if (files && files.length) setFile(files[0].name);
+  }
+
+  function openPicker() {
+    inputRef.current?.click();
   }
 
   return (
@@ -23,13 +29,17 @@ export default function Uploader() {
         setDrag(false);
         pick(e.dataTransfer.files);
       }}
-      onClick={() => inputRef.current?.click()}
-      role="button"
-      tabIndex={0}
+      // Only the empty card is click-to-browse. Once a file is loaded the card
+      // is inert, so the action buttons below don't reopen the file picker.
+      onClick={file ? undefined : openPicker}
+      role={file ? undefined : "button"}
+      tabIndex={file ? undefined : 0}
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
+        if (!file && (e.key === "Enter" || e.key === " ")) openPicker();
       }}
-      className={`flex cursor-pointer flex-col items-center justify-center rounded border border-dashed px-6 py-10 text-center transition-colors ${
+      className={`flex flex-col items-center justify-center rounded border border-dashed px-6 py-10 text-center transition-colors ${
+        file ? "cursor-default" : "cursor-pointer"
+      } ${
         drag
           ? "border-copper bg-panel-2"
           : "border-line-strong bg-panel hover:border-copper hover:bg-panel-2"
@@ -49,10 +59,33 @@ export default function Uploader() {
       {file ? (
         <>
           <p className="mt-3 font-mono text-sm text-ink">{file}</p>
-          <p className="mt-1 text-xs text-muted">
-            ready to route. parsing runs on the server in this prototype.
+          <p className="mt-1 max-w-md text-xs text-muted">
+            Routing turns a board into a pen toolpath and G-code. This prototype
+            doesn&apos;t parse your own file yet, so it opens a fully routed
+            sample so you can see what the result looks like.
           </p>
-          <span className="btn btn-copper mt-4">Route this board</span>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                router.push("/dashboard/projects/labexam");
+              }}
+              className="btn btn-copper"
+            >
+              See a routed board
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openPicker();
+              }}
+              className="btn btn-ghost"
+            >
+              Choose another file
+            </button>
+          </div>
         </>
       ) : (
         <>
