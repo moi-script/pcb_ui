@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import PcbBoard from "@/components/PcbBoard";
+import InlineEdit from "@/components/InlineEdit";
 import { useAuth } from "@/lib/auth";
 import { api, type Board } from "@/lib/api";
 
@@ -95,7 +96,16 @@ export default function ProjectDetail() {
 
       <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl tracking-tight text-ink">{board.name}</h1>
+          <h1 className="text-2xl tracking-tight text-ink">
+            <InlineEdit
+              value={board.name}
+              ariaLabel="Rename board"
+              onSave={async (next) => {
+                const updated = await api.renameBoard(board.id, next);
+                setBoard((b) => (b ? { ...b, name: updated.name } : b));
+              }}
+            />
+          </h1>
           <p className="font-mono text-xs text-faint">{board.filename}</p>
         </div>
         <div className="flex items-center gap-4">

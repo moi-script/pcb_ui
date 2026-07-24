@@ -1,18 +1,28 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import InlineEdit from "@/components/InlineEdit";
 import { useAuth } from "@/lib/auth";
-import { device } from "@/lib/data";
 
 export default function DevicePage() {
-  const { unpair } = useAuth();
+  const { session, unpair, renameDevice } = useAuth();
   const router = useRouter();
+
+  const device = session?.device;
+  if (!device) return null;
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-8">
       <span className="tlabel">Device</span>
       <h1 className="mt-1 text-2xl tracking-tight text-ink">
-        {device.alias}
+        <InlineEdit
+          value={device.alias}
+          ariaLabel="Rename device"
+          onSave={async (next) => {
+            const r = await renameDevice(next);
+            if (!r.ok) throw new Error(r.error);
+          }}
+        />
       </h1>
 
       {/* identity */}
@@ -69,8 +79,8 @@ export default function DevicePage() {
           with its device ID.
         </p>
         <button
-          onClick={() => {
-            unpair();
+          onClick={async () => {
+            await unpair();
             router.push("/connect");
           }}
           className="btn btn-ghost mt-4 !border-danger !text-danger hover:!bg-danger/5"
