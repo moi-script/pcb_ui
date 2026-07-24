@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import Uploader from "@/components/Uploader";
+import PcbBoard from "@/components/PcbBoard";
 import { useAuth } from "@/lib/auth";
 import { api, type Board } from "@/lib/api";
 
@@ -192,7 +193,16 @@ export default function Projects() {
                 )}
               </div>
               <div className="panel-2 flex aspect-[16/10] items-center justify-center p-4">
-                <BoardGlyph />
+                {b.tracks && b.tracks.length ? (
+                  <PcbBoard
+                    tracks={b.tracks}
+                    width={b.width}
+                    height={b.height}
+                    className="h-full w-full"
+                  />
+                ) : (
+                  <BoardGlyph />
+                )}
               </div>
               <dl className="grid grid-cols-3 divide-x divide-line border-t border-line text-center">
                 <Cell k="tracks" v={String(b.fcu + b.bcu)} />
