@@ -225,7 +225,12 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          <PlotControl gcodeLines={board.gcodeLines} deviceAlias={deviceAlias} />
+          <PlotControl
+            boardId={board.id}
+            email={session?.email}
+            gcodeLines={board.gcodeLines}
+            deviceAlias={deviceAlias}
+          />
         </section>
       </div>
 
@@ -250,22 +255,31 @@ export default function ProjectDetail() {
 /* --------------------------------------------------------------- controls */
 
 function PlotControl({
+  boardId,
+  email,
   gcodeLines,
   deviceAlias,
 }: {
+  boardId: string;
+  email?: string;
   gcodeLines: number;
   deviceAlias: string;
 }) {
+  // idle -> starting -> checking -> check-done -> printing -> done
+  //                       \-> error   (any request/stream failure)
   type Phase =
     | "idle"
+    | "starting"
     | "checking"
-    | "streaming-ready"
-    | "streaming"
+    | "check-done"
+    | "printing"
     | "done"
     | "error";
   const [phase, setPhase] = useState<Phase>("idle");
   const [check, setCheck] = useState(true);
   const [line, setLine] = useState(0);
+  const [total, setTotal] = useState(gcodeLines);
+  const [err, setErr] = useState("");
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(
@@ -275,37 +289,68 @@ function PlotControl({
     []
   );
 
-  function run() {
+  async function startJob(checkFlag: boolean) {
+    if (!email) {
+      setErr("No paired device on this account.");
+      setPhase("error");
+      return;
+    }
+    setErr("");
     setLine(0);
-    setPhase(check ? "checking" : "streaming");
+    setPhase("starting");
+    try {
+      const r = await api.startPrint(email, boardId, checkFlag);
+      setTotal(r.total || gcodeLines);
+      setPhase(checkFlag ? "checking" : "printing");
+    } catch (e) {
+      setErr((e as Error).message);
+      setPhase("error");
+    }
   }
 
+  async function stop() {
+    if (timer.current) clearInterval(timer.current);
+    if (email) {
+      try {
+        await api.stopPrint(email);
+      } catch {
+        /* ignore — we're stopping anyway */
+      }
+    }
+    setPhase("idle");
+    setLine(0);
+  }
+
+  // Poll the machine while a job runs; drive the bar from real status.
   useEffect(() => {
-    if (phase !== "checking" && phase !== "streaming") return;
-    timer.current = setInterval(() => {
-      setLine((l) => {
-        const next = l + Math.max(1, Math.round(gcodeLines / 40));
-        if (next >= gcodeLines) {
-          if (timer.current) clearInterval(timer.current);
-          setTimeout(() => {
-            setPhase((p) => (p === "checking" ? "streaming-ready" : "done"));
-          }, 200);
-          return gcodeLines;
+    if ((phase !== "checking" && phase !== "printing") || !email) return;
+    const id = setInterval(async () => {
+      try {
+        const s = await api.printStatus(email);
+        setLine(s.line);
+        setTotal(s.total || gcodeLines);
+        if (s.state === "error") {
+          setErr(s.error || "The plotter reported an error.");
+          setPhase("error");
+        } else if (s.state === "done") {
+          setPhase(phase === "checking" ? "check-done" : "done");
+        } else if (s.state === "stopped" || s.state === "idle") {
+          setPhase("idle");
         }
-        return next;
-      });
-    }, 55);
-    return () => {
-      if (timer.current) clearInterval(timer.current);
-    };
-  }, [phase, gcodeLines]);
+      } catch (e) {
+        setErr((e as Error).message);
+        setPhase("error");
+      }
+    }, 500);
+    timer.current = id;
+    return () => clearInterval(id);
+  }, [phase, email, gcodeLines]);
 
-  useEffect(() => {
-    if (phase === "streaming-ready") setLine(0);
-  }, [phase]);
-
-  const pct = gcodeLines ? Math.round((line / gcodeLines) * 100) : 0;
-  const active = phase === "checking" || phase === "streaming";
+  const denom = total || gcodeLines;
+  const pct = denom ? Math.round((line / denom) * 100) : 0;
+  const active = phase === "checking" || phase === "printing";
+  const showBar =
+    active || phase === "done" || phase === "check-done" || phase === "starting";
 
   return (
     <div className="panel ticked p-5">
@@ -316,7 +361,7 @@ function PlotControl({
 
       <button
         onClick={() => setCheck((v) => !v)}
-        disabled={active}
+        disabled={active || phase === "starting"}
         className="mt-4 flex w-full items-center justify-between rounded border border-line bg-panel-2 px-3 py-2.5 text-left disabled:opacity-50"
       >
         <span>
@@ -338,25 +383,27 @@ function PlotControl({
         </span>
       </button>
 
-      {(active || phase === "done" || phase === "streaming-ready") && (
+      {showBar && (
         <div className="mt-4">
           <div className="flex items-center justify-between font-mono text-xs">
             <span className="text-muted">
-              {phase === "checking"
+              {phase === "starting"
+                ? "sending to device…"
+                : phase === "checking"
                 ? "checking ($C)"
-                : phase === "streaming"
+                : phase === "printing"
                 ? "streaming"
-                : phase === "streaming-ready"
+                : phase === "check-done"
                 ? "check passed · 0 errors"
                 : "complete"}
             </span>
             <span className="text-ink">
-              {line}/{gcodeLines} · {phase === "done" ? 100 : pct}%
+              {line}/{denom} · {phase === "done" ? 100 : pct}%
             </span>
           </div>
           <div className="mt-2 h-2 w-full overflow-hidden rounded-sm bg-well">
             <div
-              className={`h-full transition-all duration-75 ${
+              className={`h-full transition-all duration-100 ${
                 phase === "checking" ? "bg-warn" : "bg-signal"
               }`}
               style={{ width: `${phase === "done" ? 100 : pct}%` }}
@@ -367,23 +414,26 @@ function PlotControl({
 
       <div className="mt-4">
         {phase === "idle" || phase === "done" || phase === "error" ? (
-          <button onClick={run} className="btn btn-copper w-full">
+          <button
+            onClick={() => startJob(check)}
+            className="btn btn-copper w-full"
+          >
             {check ? "Validate & plot" : "Plot now"}
           </button>
-        ) : phase === "streaming-ready" ? (
+        ) : phase === "check-done" ? (
           <button
-            onClick={() => setPhase("streaming")}
+            onClick={() => startJob(false)}
             className="btn btn-primary w-full"
           >
             Looks good, stream for real →
           </button>
+        ) : phase === "starting" ? (
+          <button disabled className="btn btn-copper w-full opacity-60">
+            Sending…
+          </button>
         ) : (
           <button
-            onClick={() => {
-              if (timer.current) clearInterval(timer.current);
-              setPhase("idle");
-              setLine(0);
-            }}
+            onClick={stop}
             className="btn btn-ghost w-full !border-danger !text-danger"
           >
             Stop
@@ -391,8 +441,11 @@ function PlotControl({
         )}
         {phase === "done" && (
           <p className="mt-3 text-center text-sm text-signal">
-            ✓ Sent {gcodeLines} lines · 0 errors
+            ✓ Sent {denom} lines · 0 errors
           </p>
+        )}
+        {phase === "error" && (
+          <p className="mt-3 text-center text-sm text-danger">{err}</p>
         )}
       </div>
     </div>

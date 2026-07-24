@@ -53,6 +53,23 @@ export type Board = {
   gcode?: string;
 };
 
+export type PrintStart = { ok: boolean; total: number; check: boolean };
+
+export type PrintState =
+  | "idle"
+  | "checking"
+  | "printing"
+  | "done"
+  | "error"
+  | "stopped";
+
+export type PrintStatus = {
+  state: PrintState;
+  line: number;
+  total: number;
+  error?: string;
+};
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   let res: Response;
   try {
@@ -120,6 +137,22 @@ export const api = {
 
   deleteBoard: (id: string) =>
     req<{ ok: boolean }>(`/board/${id}`, { method: "DELETE" }),
+
+  // --- print streaming (backend relays to the ESP32 bridge) ---
+  startPrint: (email: string, boardId: string, check: boolean) =>
+    req<PrintStart>("/print", {
+      method: "POST",
+      body: JSON.stringify({ email, board_id: boardId, check }),
+    }),
+
+  printStatus: (email: string) =>
+    req<PrintStatus>(`/print/status/${encodeURIComponent(email)}`),
+
+  stopPrint: (email: string) =>
+    req<{ ok: boolean }>("/print/stop", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
 
   // multipart upload -> route -> stored board
   async route(file: File, email: string): Promise<Board> {
