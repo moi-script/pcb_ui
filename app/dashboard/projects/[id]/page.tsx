@@ -1,21 +1,54 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import PcbBoard from "@/components/PcbBoard";
-import { getProject, device, gcodeSample } from "@/lib/data";
+import { useAuth } from "@/lib/auth";
+import { api, type Board } from "@/lib/api";
 
 export default function ProjectDetail() {
   const params = useParams<{ id: string }>();
-  const project = getProject(params.id);
+  const router = useRouter();
+  const { session } = useAuth();
+
+  const [board, setBoard] = useState<Board | null>(null);
+  const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
+  const [armed, setArmed] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [front, setFront] = useState(true);
   const [back, setBack] = useState(true);
   const [toolpath, setToolpath] = useState(false);
   const [replay, setReplay] = useState(0);
 
-  if (!project) {
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const b = await api.getBoard(params.id);
+        if (alive) {
+          setBoard(b);
+          setState("ready");
+        }
+      } catch {
+        if (alive) setState("missing");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [params.id]);
+
+  if (state === "loading") {
+    return (
+      <div className="mx-auto max-w-6xl px-6 py-16">
+        <span className="tlabel animate-pulse">loading board…</span>
+      </div>
+    );
+  }
+
+  if (state === "missing" || !board) {
     return (
       <div className="mx-auto max-w-6xl px-6 py-16 text-center">
         <p className="tlabel">board not found</p>
@@ -26,26 +59,73 @@ export default function ProjectDetail() {
     );
   }
 
-  const reduction = Math.round(
-    (1 - project.penUpAfter / project.penUpBefore) * 100
-  );
+  const reduction = board.penUpBefore
+    ? Math.round((1 - board.penUpAfter / board.penUpBefore) * 100)
+    : 0;
+  const deviceAlias = session?.device?.alias ?? "your machine";
+
+  async function removeBoard() {
+    if (!board) return;
+    setDeleting(true);
+    try {
+      await api.deleteBoard(board.id);
+      router.push("/dashboard/projects");
+    } catch {
+      setDeleting(false);
+      setArmed(false);
+    }
+  }
+
+  function downloadGcode() {
+    if (!board?.gcode) return;
+    const blob = new Blob([board.gcode], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = board.filename.replace(/\.kicad_pcb$/, "") + ".gcode";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
-      <Link
-        href="/dashboard/projects"
-        className="tlabel hover:text-ink"
-      >
+      <Link href="/dashboard/projects" className="tlabel hover:text-ink">
         ← Boards
       </Link>
 
       <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl tracking-tight text-ink">{project.name}</h1>
-          <p className="font-mono text-xs text-faint">{project.board}</p>
+          <h1 className="text-2xl tracking-tight text-ink">{board.name}</h1>
+          <p className="font-mono text-xs text-faint">{board.filename}</p>
         </div>
-        <div className="flex items-center gap-2 font-mono text-xs text-muted">
-          target · {device.alias}
+        <div className="flex items-center gap-4">
+          <span className="font-mono text-xs text-muted">
+            target · {deviceAlias}
+          </span>
+          {armed ? (
+            <span className="flex items-center gap-2 font-mono text-xs">
+              <button
+                onClick={removeBoard}
+                disabled={deleting}
+                className="text-danger hover:underline disabled:opacity-50"
+              >
+                {deleting ? "deleting…" : "delete board?"}
+              </button>
+              <button
+                onClick={() => setArmed(false)}
+                className="text-faint hover:text-muted"
+              >
+                cancel
+              </button>
+            </span>
+          ) : (
+            <button
+              onClick={() => setArmed(true)}
+              className="tlabel hover:!text-danger"
+            >
+              delete
+            </button>
+          )}
         </div>
       </div>
 
@@ -78,6 +158,9 @@ export default function ProjectDetail() {
           <div className="panel-2 aspect-[16/10] p-5">
             <PcbBoard
               key={`${front}${back}${toolpath}${replay}`}
+              tracks={board.tracks}
+              width={board.width}
+              height={board.height}
               showFront={front}
               showBack={back}
               toolpath={toolpath}
@@ -94,21 +177,19 @@ export default function ProjectDetail() {
 
         {/* right column */}
         <section className="space-y-6">
-          {/* stats */}
           <div className="panel ticked p-5">
             <span className="tlabel">Route report</span>
             <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3">
-              <Metric k="Tracks" v={String(project.tracks)} />
-              <Metric k="Nets" v={String(project.nets)} />
-              <Metric k="Size (mm)" v={project.size} />
-              <Metric k="Layer" v={project.layer} />
-              <Metric k="Draw moves" v={String(project.drawMoves)} />
-              <Metric k="Travel moves" v={String(project.travelMoves)} />
-              <Metric k="G-code lines" v={String(project.gcodeLines)} />
-              <Metric k="Est. time" v={`~${project.estMinutes} min`} />
+              <Metric k="Tracks" v={String(board.fcu + board.bcu)} />
+              <Metric k="Nets" v={String(board.nets)} />
+              <Metric k="Size (mm)" v={board.size} />
+              <Metric k="Plot layer" v={board.layer} />
+              <Metric k="Draw moves" v={String(board.drawMoves)} />
+              <Metric k="Travel moves" v={String(board.travelMoves)} />
+              <Metric k="G-code lines" v={String(board.gcodeLines)} />
+              <Metric k="Est. time" v={`~${board.estMinutes} min`} />
             </dl>
 
-            {/* travel optimization bar */}
             <div className="mt-5 border-t border-line pt-4">
               <div className="flex items-center justify-between">
                 <span className="tlabel">Travel optimization</span>
@@ -120,29 +201,36 @@ export default function ProjectDetail() {
                 <div
                   className="h-full bg-copper"
                   style={{
-                    width: `${(project.penUpAfter / project.penUpBefore) * 100}%`,
+                    width: `${
+                      board.penUpBefore
+                        ? (board.penUpAfter / board.penUpBefore) * 100
+                        : 0
+                    }%`,
                   }}
                 />
               </div>
               <p className="mt-2 font-mono text-[0.7rem] text-muted">
-                {project.penUpBefore} mm → {project.penUpAfter} mm pen-up travel
+                {board.penUpBefore} mm → {board.penUpAfter} mm pen-up travel
               </p>
             </div>
           </div>
 
-          {/* stream control */}
-          <PlotControl gcodeLines={project.gcodeLines} />
+          <PlotControl gcodeLines={board.gcodeLines} deviceAlias={deviceAlias} />
         </section>
       </div>
 
       {/* gcode viewer */}
       <section className="panel ticked mt-6">
         <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-          <span className="tlabel">G-code · {project.board.replace(".kicad_pcb", ".gcode")}</span>
-          <button className="tlabel hover:text-copper">↓ download</button>
+          <span className="tlabel">
+            G-code · {board.filename.replace(/\.kicad_pcb$/, ".gcode")}
+          </span>
+          <button onClick={downloadGcode} className="tlabel hover:text-copper">
+            ↓ download
+          </button>
         </div>
-        <pre className="overflow-x-auto px-5 py-4 font-mono text-xs leading-relaxed text-ink-soft">
-          {gcodeSample}
+        <pre className="max-h-80 overflow-auto px-5 py-4 font-mono text-xs leading-relaxed text-ink-soft">
+          {board.gcode}
         </pre>
       </section>
     </div>
@@ -151,7 +239,13 @@ export default function ProjectDetail() {
 
 /* --------------------------------------------------------------- controls */
 
-function PlotControl({ gcodeLines }: { gcodeLines: number }) {
+function PlotControl({
+  gcodeLines,
+  deviceAlias,
+}: {
+  gcodeLines: number;
+  deviceAlias: string;
+}) {
   type Phase =
     | "idle"
     | "checking"
@@ -164,9 +258,12 @@ function PlotControl({ gcodeLines }: { gcodeLines: number }) {
   const [line, setLine] = useState(0);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => () => {
-    if (timer.current) clearInterval(timer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (timer.current) clearInterval(timer.current);
+    },
+    []
+  );
 
   function run() {
     setLine(0);
@@ -180,7 +277,6 @@ function PlotControl({ gcodeLines }: { gcodeLines: number }) {
         const next = l + Math.max(1, Math.round(gcodeLines / 40));
         if (next >= gcodeLines) {
           if (timer.current) clearInterval(timer.current);
-          // checking finishes -> either done, or roll into a real stream
           setTimeout(() => {
             setPhase((p) => (p === "checking" ? "streaming-ready" : "done"));
           }, 200);
@@ -194,24 +290,20 @@ function PlotControl({ gcodeLines }: { gcodeLines: number }) {
     };
   }, [phase, gcodeLines]);
 
-  // when a check pass completes, offer to stream for real
   useEffect(() => {
-    if (phase === "streaming-ready") {
-      setLine(0);
-    }
+    if (phase === "streaming-ready") setLine(0);
   }, [phase]);
 
-  const pct = Math.round((line / gcodeLines) * 100);
+  const pct = gcodeLines ? Math.round((line / gcodeLines) * 100) : 0;
   const active = phase === "checking" || phase === "streaming";
 
   return (
     <div className="panel ticked p-5">
       <div className="flex items-center justify-between">
         <span className="tlabel">Stream to device</span>
-        <span className="font-mono text-xs text-muted">{device.alias}</span>
+        <span className="font-mono text-xs text-muted">{deviceAlias}</span>
       </div>
 
-      {/* check mode switch */}
       <button
         onClick={() => setCheck((v) => !v)}
         disabled={active}
@@ -236,7 +328,6 @@ function PlotControl({ gcodeLines }: { gcodeLines: number }) {
         </span>
       </button>
 
-      {/* progress */}
       {(active || phase === "done" || phase === "streaming-ready") && (
         <div className="mt-4">
           <div className="flex items-center justify-between font-mono text-xs">
@@ -264,7 +355,6 @@ function PlotControl({ gcodeLines }: { gcodeLines: number }) {
         </div>
       )}
 
-      {/* actions */}
       <div className="mt-4">
         {phase === "idle" || phase === "done" || phase === "error" ? (
           <button onClick={run} className="btn btn-copper w-full">
@@ -347,10 +437,7 @@ function Legend({
     <span className="inline-flex items-center gap-2 font-mono text-[0.7rem] text-muted">
       <span
         className="inline-block h-0 w-5 border-t-2"
-        style={{
-          borderColor: color,
-          borderStyle: dashed ? "dashed" : "solid",
-        }}
+        style={{ borderColor: color, borderStyle: dashed ? "dashed" : "solid" }}
       />
       {label}
     </span>
