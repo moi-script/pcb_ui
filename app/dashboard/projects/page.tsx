@@ -19,6 +19,8 @@ export default function Projects() {
   const [loading, setLoading] = useState(true);
   const [armed, setArmed] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"newest" | "name" | "tracks">("newest");
 
   useEffect(() => {
     if (!session) return;
@@ -37,6 +39,20 @@ export default function Projects() {
       alive = false;
     };
   }, [session]);
+
+  const q = query.trim().toLowerCase();
+  const visible = boards
+    .filter(
+      (b) =>
+        !q ||
+        b.name.toLowerCase().includes(q) ||
+        b.filename.toLowerCase().includes(q)
+    )
+    .sort((a, b) => {
+      if (sort === "name") return a.name.localeCompare(b.name);
+      if (sort === "tracks") return b.fcu + b.bcu - (a.fcu + a.bcu);
+      return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
+    });
 
   async function remove(id: string) {
     setDeleting(id);
@@ -74,8 +90,43 @@ export default function Projects() {
           above to route your first board.
         </p>
       ) : (
-        <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {boards.map((b) => (
+        <>
+          <div className="mt-8 flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 sm:max-w-xs">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search boards…"
+                className="w-full rounded border border-line bg-panel-2 px-3 py-2 font-mono text-sm text-ink placeholder:text-faint focus:border-line-strong focus:outline-none"
+              />
+            </div>
+            <label className="flex items-center gap-2">
+              <span className="tlabel">sort</span>
+              <select
+                value={sort}
+                onChange={(e) =>
+                  setSort(e.target.value as "newest" | "name" | "tracks")
+                }
+                className="rounded border border-line bg-panel-2 px-2 py-2 font-mono text-sm text-ink focus:border-line-strong focus:outline-none"
+              >
+                <option value="newest">Newest</option>
+                <option value="name">Name A–Z</option>
+                <option value="tracks">Most tracks</option>
+              </select>
+            </label>
+            <span className="tlabel ml-auto">
+              {visible.length}/{boards.length}
+            </span>
+          </div>
+
+          {visible.length === 0 ? (
+            <p className="mt-8 text-sm text-muted">
+              No boards match{" "}
+              <span className="font-mono text-ink">{query.trim()}</span>.
+            </p>
+          ) : (
+            <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {visible.map((b) => (
             <Link
               key={b.id}
               href={`/dashboard/projects/${b.id}`}
@@ -148,9 +199,11 @@ export default function Projects() {
                 <Cell k="nets" v={String(b.nets)} />
                 <Cell k="mm" v={String(b.width)} />
               </dl>
-            </Link>
-          ))}
-        </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
