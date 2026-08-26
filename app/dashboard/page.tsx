@@ -100,10 +100,11 @@ export default function Overview() {
                   href={`/dashboard/projects/${b.id}`}
                   className="flex items-center gap-4 px-5 py-4 transition-colors hover:bg-well/50"
                 >
-                  {b.tracks && b.tracks.length ? (
+                  {(b.strokes?.length || b.tracks?.length) ? (
                     <div className="flex h-10 w-16 flex-none items-center justify-center overflow-hidden rounded border border-line bg-panel-2 p-1">
                       <PcbBoard
                         tracks={b.tracks}
+                        strokes={b.strokes}
                         width={b.width}
                         height={b.height}
                         className="h-full w-full"
@@ -149,6 +150,7 @@ export default function Overview() {
                 <PcbBoard
                   animate
                   tracks={featured.tracks}
+                  strokes={featured.strokes}
                   width={featured.width}
                   height={featured.height}
                   className="h-full w-full"
