@@ -63,6 +63,9 @@ export default function ProjectDetail() {
   const reduction = board.penUpBefore
     ? Math.round((1 - board.penUpAfter / board.penUpBefore) * 100)
     : 0;
+  // A traced image is one layer with one synthetic net, so the copper-layer
+  // controls and counts would all be dead weight on it.
+  const traced = board.source === "image";
   const deviceAlias = session?.device?.alias ?? "your machine";
 
   async function removeBoard() {
@@ -144,12 +147,24 @@ export default function ProjectDetail() {
         <section className="panel ticked">
           <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
             <span className="tlabel mr-auto">Preview</span>
-            <Toggle on={front} onClick={() => setFront((v) => !v)} color="fcu">
-              F.Cu
-            </Toggle>
-            <Toggle on={back} onClick={() => setBack((v) => !v)} color="bcu">
-              B.Cu
-            </Toggle>
+            {!traced && (
+              <>
+                <Toggle
+                  on={front}
+                  onClick={() => setFront((v) => !v)}
+                  color="fcu"
+                >
+                  F.Cu
+                </Toggle>
+                <Toggle
+                  on={back}
+                  onClick={() => setBack((v) => !v)}
+                  color="bcu"
+                >
+                  B.Cu
+                </Toggle>
+              </>
+            )}
             <Toggle
               on={toolpath}
               onClick={() => setToolpath((v) => !v)}
@@ -179,8 +194,14 @@ export default function ProjectDetail() {
             />
           </div>
           <div className="flex items-center gap-5 border-t border-line px-4 py-2.5">
-            <Legend color="var(--color-fcu)" label="F.Cu draw" />
-            <Legend color="var(--color-bcu)" label="B.Cu draw" />
+            {traced ? (
+              <Legend color="var(--color-fcu)" label="traced centreline" />
+            ) : (
+              <>
+                <Legend color="var(--color-fcu)" label="F.Cu draw" />
+                <Legend color="var(--color-bcu)" label="B.Cu draw" />
+              </>
+            )}
             <Legend color="var(--color-faint)" label="pen-up travel" dashed />
           </div>
         </section>
@@ -188,17 +209,39 @@ export default function ProjectDetail() {
         {/* right column */}
         <section className="space-y-6">
           <div className="panel ticked p-5">
-            <span className="tlabel">Route report</span>
+            <span className="tlabel">
+              {traced ? "Trace report" : "Route report"}
+            </span>
             <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3">
-              <Metric k="Tracks" v={String(board.fcu + board.bcu)} />
-              <Metric k="Nets" v={String(board.nets)} />
+              {traced ? (
+                <>
+                  <Metric k="Strokes" v={String(board.fcu)} />
+                  <Metric k="Trace mode" v={board.traceParams?.mode ?? "—"} />
+                </>
+              ) : (
+                <>
+                  <Metric k="Tracks" v={String(board.fcu + board.bcu)} />
+                  <Metric k="Nets" v={String(board.nets)} />
+                </>
+              )}
               <Metric k="Size (mm)" v={board.size} />
-              <Metric k="Plot layer" v={board.layer} />
+              {!traced && <Metric k="Plot layer" v={board.layer} />}
+              {traced && (
+                <Metric k="Source" v={board.traceParams?.preset ?? "—"} />
+              )}
               <Metric k="Draw moves" v={String(board.drawMoves)} />
               <Metric k="Travel moves" v={String(board.travelMoves)} />
               <Metric k="G-code lines" v={String(board.gcodeLines)} />
               <Metric k="Est. time" v={`~${board.estMinutes} min`} />
             </dl>
+
+            {traced && !!board.traceInfo?.warnings.length && (
+              <ul className="mt-4 space-y-1 border-t border-line pt-4 text-xs text-warn">
+                {board.traceInfo.warnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            )}
 
             <div className="mt-5 border-t border-line pt-4">
               <div className="flex items-center justify-between">
