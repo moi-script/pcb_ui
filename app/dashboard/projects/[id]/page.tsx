@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import PcbBoard from "@/components/PcbBoard";
 import InlineEdit from "@/components/InlineEdit";
+import RetracePanel from "@/components/RetracePanel";
 import { useAuth } from "@/lib/auth";
 import { api, type Board } from "@/lib/api";
 
@@ -267,6 +268,16 @@ export default function ProjectDetail() {
               </p>
             </div>
           </div>
+
+          {traced && (
+            <RetracePanel
+              board={board}
+              onDone={(b) => {
+                setBoard(b);
+                setReplay((r) => r + 1); // redraw the preview animation
+              }}
+            />
+          )}
 
           <PlotControl
             boardId={board.id}

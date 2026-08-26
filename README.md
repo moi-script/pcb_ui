@@ -70,6 +70,11 @@ into paths.
   lighting in a photo of a board, keeps corners sharp, and preserves small pad
   marks.
 
+The source image is kept, so the **Re-trace** panel on the board page reruns
+it with different settings — size, mode, preset, threshold, invert — without
+re-uploading. The board keeps its id and name, so the link stays valid and a
+rename is not undone. Deleting the board deletes the stored source with it.
+
 Two known limits, both inherent to single-line drawing: a filled shape becomes
 a spidery skeleton rather than a filled area, and a perfect disc thins to a
 single point, so it has no centreline at all and is rejected with an error.

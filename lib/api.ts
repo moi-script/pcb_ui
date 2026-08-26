@@ -57,6 +57,8 @@ export type Board = {
   traceParams?: TraceParams;
   traceInfo?: TraceInfo;
   frameGcode?: string;
+  /** false for KiCad boards, and for images traced before sources were kept */
+  hasSource?: boolean;
 };
 
 export type TraceParams = {
@@ -217,4 +219,11 @@ export const api = {
     if (!res.ok) throw new Error(data?.detail || "Tracing failed.");
     return data as Board;
   },
+
+  // re-run the stored source image with different settings, in place
+  retrace: (boardId: string, params: TraceParams) =>
+    req<Board>(`/board/${boardId}/retrace`, {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
 };
