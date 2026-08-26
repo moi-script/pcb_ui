@@ -73,7 +73,7 @@
   - `tracer.prep.choose_threshold(gray: np.ndarray, threshold: int | None) -> int`
   - `tracer.cv_image.pcb_from_gray(gray: np.ndarray, blur_size=3, block_size=15, C=2, min_area=50, close_gaps=2, sharpen=True) -> np.ndarray`
 
-- [ ] **Step 1: Add the dependencies**
+- [x] **Step 1: Add the dependencies**
 
 Append to `../pcb_reader/requirements.txt`:
 
@@ -90,7 +90,7 @@ pytest
 
 Then run: `pip install -r requirements.txt` from `../pcb_reader`.
 
-- [ ] **Step 2: Create the package skeleton and pytest config**
+- [x] **Step 2: Create the package skeleton and pytest config**
 
 ```bash
 cd ../pcb_reader
@@ -106,7 +106,7 @@ testpaths = tests
 python_files = test_*.py
 ```
 
-- [ ] **Step 3: Copy `centerline.py` verbatim**
+- [x] **Step 3: Copy `centerline.py` verbatim**
 
 It is already pure — it imports only `math`, `numpy`, and `skimage`, and touches no files. Copy with no edits:
 
@@ -116,7 +116,7 @@ cp /c/cnc_line_backend/cnc_1line_tracer-main/tools/centerline.py ../pcb_reader/t
 
 Verify it imports: `cd ../pcb_reader && python -c "from tracer import centerline; print(centerline.trace)"`
 
-- [ ] **Step 4: Copy `prep_image.py` as `prep.py`, then strip the CLI**
+- [x] **Step 4: Copy `prep_image.py` as `prep.py`, then strip the CLI**
 
 ```bash
 cp /c/cnc_line_backend/cnc_1line_tracer-main/tools/prep_image.py ../pcb_reader/tracer/prep.py
@@ -163,7 +163,7 @@ def prepare(path: str, threshold: int | None = None, invert: bool = False,
                          crop, bridge, n_colors, min_blob)
 ```
 
-- [ ] **Step 5: Copy `cv_image.py` and add an array entry point**
+- [x] **Step 5: Copy `cv_image.py` and add an array entry point**
 
 ```bash
 cp /c/cnc_line_backend/cnc_1line_tracer-main/tools/cv_image.py ../pcb_reader/tracer/cv_image.py
@@ -219,7 +219,7 @@ def pcb_from_gray(gray: np.ndarray, blur_size: int = 3, block_size: int = 15,
 
 Delete any `if __name__ == "__main__":` block and `argparse` import if present.
 
-- [ ] **Step 6: Port the centerline tests**
+- [x] **Step 6: Port the centerline tests**
 
 ```bash
 cp /c/cnc_line_backend/cnc_1line_tracer-main/tests/test_centerline.py ../pcb_reader/tests/test_centerline.py
@@ -231,12 +231,12 @@ Edit the imports at the top of `../pcb_reader/tests/test_centerline.py`: replace
 from tracer import centerline as cl
 ```
 
-- [ ] **Step 7: Run the centerline tests**
+- [x] **Step 7: Run the centerline tests**
 
 Run: `cd ../pcb_reader && python -m pytest tests/test_centerline.py -v`
 Expected: PASS (the reference suite is green here — all 30+ tests).
 
-- [ ] **Step 8: Port the prep tests**
+- [x] **Step 8: Port the prep tests**
 
 ```bash
 cp /c/cnc_line_backend/cnc_1line_tracer-main/tests/test_prep_image.py ../pcb_reader/tests/test_prep.py
@@ -244,14 +244,14 @@ cp /c/cnc_line_backend/cnc_1line_tracer-main/tests/test_prep_image.py ../pcb_rea
 
 Edit `../pcb_reader/tests/test_prep.py`: replace the module import with `from tracer import prep`, and rename every `prep_image.` / `prep.` reference to `prep.`. Any test calling `prepare(path)` keeps working — the wrapper exists.
 
-- [ ] **Step 9: Run the prep tests and watch the known failure**
+- [x] **Step 9: Run the prep tests and watch the known failure**
 
 Run: `cd ../pcb_reader && python -m pytest tests/test_prep.py -v`
 Expected: one FAIL — `test_auto_threshold_pulls_faint_linework_above_the_cut`, `assert 195 == 210`.
 
 This is a brittle fixture, not a defect. The test builds a synthetic image, computes `base = prep.otsu(gray)`, then paints a faint band at `base + 15` — but painting that band *changes the histogram*, so Otsu re-computes to a different cut on the modified image. The test then compares against the stale `base`.
 
-- [ ] **Step 10: Fix the brittle assertion**
+- [x] **Step 10: Fix the brittle assertion**
 
 In `../pcb_reader/tests/test_prep.py`, replace the assertion so it derives the expectation the way `choose_threshold` does, on the *final* image:
 
@@ -273,12 +273,12 @@ def test_auto_threshold_pulls_faint_linework_above_the_cut():
     assert cut > base
 ```
 
-- [ ] **Step 11: Run the whole suite**
+- [x] **Step 11: Run the whole suite**
 
 Run: `cd ../pcb_reader && python -m pytest tests/ -v`
 Expected: PASS, no failures.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 cd ../pcb_reader
@@ -303,7 +303,7 @@ git commit -m "feat: vendor centerline tracer as pure functions"
   - `tracer.emit.stroke_report(strokes, cfg=CONFIG) -> dict` with keys `drawMoves`, `travelMoves`, `penUpBefore`, `penUpAfter`, `drawLength`, `estMinutes`
   - `tracer.emit.bounds(strokes) -> tuple[float, float, float, float]`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Write `../pcb_reader/tests/test_emit.py`:
 
@@ -414,12 +414,12 @@ def test_empty_strokes_raise():
         emit.generate_from_strokes([])
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd ../pcb_reader && python -m pytest tests/test_emit.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'tracer.emit'`
 
-- [ ] **Step 3: Write the emitter**
+- [x] **Step 3: Write the emitter**
 
 Write `../pcb_reader/tracer/emit.py`:
 
@@ -582,12 +582,12 @@ def stroke_report(strokes: list[Stroke], cfg: dict = CONFIG) -> dict:
     }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd ../pcb_reader && python -m pytest tests/test_emit.py -v`
 Expected: PASS (14 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd ../pcb_reader
@@ -612,7 +612,7 @@ git commit -m "feat: stroke g-code emitter with alignment frame"
   - `tracer.pipeline.trace_image(data: bytes, params: TraceParams) -> tuple[list[Stroke], dict]` — strokes plus a `warnings`/`inkCoverage` info dict
   - `tracer.pipeline.TraceError(ValueError)`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Write `../pcb_reader/tests/test_pipeline.py`:
 
@@ -732,12 +732,12 @@ def test_pcb_preset_runs():
     assert strokes
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd ../pcb_reader && python -m pytest tests/test_pipeline.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'tracer.pipeline'`
 
-- [ ] **Step 3: Write the pipeline**
+- [x] **Step 3: Write the pipeline**
 
 Write `../pcb_reader/tracer/pipeline.py`:
 
@@ -899,7 +899,7 @@ def trace_image(data: bytes, params: TraceParams) -> tuple[list[Stroke], dict]:
     }
 ```
 
-- [ ] **Step 4: Re-export from the package**
+- [x] **Step 4: Re-export from the package**
 
 Write `../pcb_reader/tracer/__init__.py`:
 
@@ -910,7 +910,7 @@ from tracer.pipeline import TraceError, TraceParams, trace_image
 __all__ = ["TraceError", "TraceParams", "trace_image"]
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `cd ../pcb_reader && python -m pytest tests/test_pipeline.py -v`
 Expected: PASS (12 tests)
@@ -921,12 +921,12 @@ print the actual value and check it against the disc's circumference
 The skeleton must be well under that. Adjust the bound only if the geometry
 justifies it — do not loosen it to make a failure go away.
 
-- [ ] **Step 6: Run the whole suite**
+- [x] **Step 6: Run the whole suite**
 
 Run: `cd ../pcb_reader && python -m pytest tests/ -v`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd ../pcb_reader
@@ -948,7 +948,7 @@ git commit -m "feat: image-to-strokes tracing pipeline"
   - `server.build_board_from_strokes(strokes, name, filename, params, info) -> dict`
   - `POST /trace` returning the same document shape as `POST /route`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Write `../pcb_reader/tests/test_trace_endpoint.py`:
 
@@ -1037,12 +1037,12 @@ def test_geometry_starts_at_the_origin(doc):
     assert min(ys) == pytest.approx(0, abs=0.01)
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd ../pcb_reader && python -m pytest tests/test_trace_endpoint.py -v`
 Expected: FAIL — `AttributeError: module 'server' has no attribute 'build_board_from_strokes'`
 
-- [ ] **Step 3: Import the tracer in `server.py`**
+- [x] **Step 3: Import the tracer in `server.py`**
 
 In `../pcb_reader/server.py`, below the existing `from pcb_read import extract_wiring` line, add:
 
@@ -1051,7 +1051,7 @@ from tracer import TraceError, TraceParams, trace_image
 from tracer import emit
 ```
 
-- [ ] **Step 4: Add `build_board_from_strokes`**
+- [x] **Step 4: Add `build_board_from_strokes`**
 
 In `../pcb_reader/server.py`, immediately after the existing `build_board` function, add:
 
@@ -1113,12 +1113,12 @@ def build_board_from_strokes(strokes: list, name: str, filename: str,
     }
 ```
 
-- [ ] **Step 5: Run the document tests**
+- [x] **Step 5: Run the document tests**
 
 Run: `cd ../pcb_reader && python -m pytest tests/test_trace_endpoint.py -v`
 Expected: PASS (10 tests)
 
-- [ ] **Step 6: Add the endpoint**
+- [x] **Step 6: Add the endpoint**
 
 In `../pcb_reader/server.py`, immediately after the existing `POST /route` handler, add:
 
@@ -1158,7 +1158,7 @@ async def trace(file: UploadFile = File(...), email: str = Form(...),
     return out_board(board, full=True)
 ```
 
-- [ ] **Step 7: Pass the new fields through `out_board`**
+- [x] **Step 7: Pass the new fields through `out_board`**
 
 In `../pcb_reader/server.py`, inside `out_board`, just before `if full:`, add:
 
@@ -1173,7 +1173,7 @@ In `../pcb_reader/server.py`, inside `out_board`, just before `if full:`, add:
         d["strokes"] = doc["strokes"]
 ```
 
-- [ ] **Step 8: Document the endpoint in the module docstring**
+- [x] **Step 8: Document the endpoint in the module docstring**
 
 In `../pcb_reader/server.py`, add one line to the `Endpoints:` list in the module docstring, under the `/route` line:
 
@@ -1181,12 +1181,12 @@ In `../pcb_reader/server.py`, add one line to the `Endpoints:` list in the modul
     POST /trace                (multipart: file, email, size_mm, mode, preset) -> traced board
 ```
 
-- [ ] **Step 9: Run the whole suite**
+- [x] **Step 9: Run the whole suite**
 
 Run: `cd ../pcb_reader && python -m pytest tests/ -v`
 Expected: PASS
 
-- [ ] **Step 10: Smoke-test the running server**
+- [x] **Step 10: Smoke-test the running server**
 
 Start it: `cd ../pcb_reader && uvicorn server:app --port 8000`
 Then in another shell:
@@ -1201,7 +1201,7 @@ Expected: JSON with `source: "image"`, a non-empty `gcode`, and `tracks`.
 This needs MongoDB running. If it is not, the failure will be a pymongo
 connection error, not a tracing error — check which before debugging.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 cd ../pcb_reader
@@ -1220,7 +1220,7 @@ git commit -m "feat: POST /trace endpoint for image uploads"
 - Consumes: `POST /trace`
 - Produces: `api.trace(file, email, params): Promise<Board>`, `TraceParams` type
 
-- [ ] **Step 1: Add the types**
+- [x] **Step 1: Add the types**
 
 In `lib/api.ts`, after the existing `Board` type, add:
 
@@ -1251,7 +1251,7 @@ Then add these three optional fields to the existing `Board` type, beside
   frameGcode?: string;
 ```
 
-- [ ] **Step 2: Add the client method**
+- [x] **Step 2: Add the client method**
 
 In `lib/api.ts`, inside the `api` object and directly after the existing
 `route` method, add:
@@ -1275,12 +1275,12 @@ In `lib/api.ts`, inside the `api` object and directly after the existing
   },
 ```
 
-- [ ] **Step 3: Typecheck**
+- [x] **Step 3: Typecheck**
 
 Run: `npx tsc --noEmit`
 Expected: exit 0
 
-- [ ] **Step 4: Widen the uploader's accepted files**
+- [x] **Step 4: Widen the uploader's accepted files**
 
 In `components/Uploader.tsx`, change the file input's `accept` attribute to:
 
@@ -1288,7 +1288,7 @@ In `components/Uploader.tsx`, change the file input's `accept` attribute to:
         accept=".kicad_pcb,image/png,image/jpeg,image/bmp,image/webp"
 ```
 
-- [ ] **Step 5: Branch on file type**
+- [x] **Step 5: Branch on file type**
 
 In `components/Uploader.tsx`, add this state beside the existing `file`,
 `busy`, and `error` state:
@@ -1326,7 +1326,7 @@ Then replace the body of `routeFile` with:
   }
 ```
 
-- [ ] **Step 6: Add the options panel**
+- [x] **Step 6: Add the options panel**
 
 In `components/Uploader.tsx`, directly after the `<p>` that shows `file.name`
 and before the error paragraph, add:
@@ -1394,7 +1394,7 @@ and before the error paragraph, add:
       )}
 ```
 
-- [ ] **Step 7: Adjust the copy for images**
+- [x] **Step 7: Adjust the copy for images**
 
 In `components/Uploader.tsx`, the paragraph under the filename currently
 describes routing only. Replace its text with a conditional:
@@ -1407,12 +1407,12 @@ describes routing only. Replace its text with a conditional:
           </p>
 ```
 
-- [ ] **Step 8: Typecheck and build**
+- [x] **Step 8: Typecheck and build**
 
 Run: `npx tsc --noEmit && npm run build`
 Expected: both succeed
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add lib/api.ts components/Uploader.tsx
@@ -1429,7 +1429,7 @@ git commit -m "feat: trace an uploaded image into a board"
 **Interfaces:**
 - Consumes: `Board.source`, `Board.traceParams`, `api.trace`
 
-- [ ] **Step 1: Hide the layer toggles for traced boards**
+- [x] **Step 1: Hide the layer toggles for traced boards**
 
 In `app/dashboard/projects/[id]/page.tsx`, find the layer-toggle controls
 (the F.Cu / B.Cu checkboxes). Wrap them so they only render for KiCad boards:
@@ -1443,7 +1443,7 @@ In `app/dashboard/projects/[id]/page.tsx`, find the layer-toggle controls
 A traced board is single-layer; a toggle that does nothing is worse than no
 toggle.
 
-- [ ] **Step 2: Show the trace parameters**
+- [x] **Step 2: Show the trace parameters**
 
 In the same file, inside the report/details panel, add:
 
@@ -1472,19 +1472,19 @@ In the same file, inside the report/details panel, add:
 )}
 ```
 
-- [ ] **Step 3: Typecheck and build**
+- [x] **Step 3: Typecheck and build**
 
 Run: `npx tsc --noEmit && npm run build`
 Expected: both succeed
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add "app/dashboard/projects/[id]/page.tsx"
 git commit -m "feat: show trace provenance on a traced board"
 ```
 
-- [ ] **Step 5: Document the image path in the README**
+- [x] **Step 5: Document the image path in the README**
 
 In `README.md`, in the Pages table, change the
 `/dashboard/projects` row to mention both inputs:
@@ -1516,7 +1516,7 @@ frame first to check placement — it costs nothing and it is the cheapest way
 to find out the drawing runs off the edge of the work.
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add README.md
@@ -1527,13 +1527,13 @@ git commit -m "docs: image tracing in the README"
 
 ## Verification
 
-- [ ] `cd ../pcb_reader && python -m pytest tests/ -v` — all green
-- [ ] `npx tsc --noEmit` — exit 0
-- [ ] `npm run build` — succeeds
-- [ ] With MongoDB and both servers up: upload `1.jpg`, confirm the preview
+- [x] `cd ../pcb_reader && python -m pytest tests/ -v` — all green
+- [x] `npx tsc --noEmit` — exit 0
+- [x] `npm run build` — succeeds
+- [x] With MongoDB and both servers up: upload `1.jpg`, confirm the preview
       shows the traced geometry, the G-code downloads, and the report tiles
       read sensibly
-- [ ] Upload a `.kicad_pcb` and confirm the KiCad path is unchanged
-- [ ] Confirm `C:\cnc_line_backend\cnc_1line_tracer-main` has no modifications:
+- [x] Upload a `.kicad_pcb` and confirm the KiCad path is unchanged
+- [x] Confirm `C:\cnc_line_backend\cnc_1line_tracer-main` has no modifications:
       `cd /c/cnc_line_backend/cnc_1line_tracer-main && git status` (or check
       file mtimes if it is not a repo)
