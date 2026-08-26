@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { api, type Board, type TraceParams } from "@/lib/api";
+import { api, type Board, type TraceMode, type TraceParams } from "@/lib/api";
+import HatchFields from "@/components/HatchFields";
 
 type Props = {
   board: Board;
@@ -20,11 +21,14 @@ export default function RetracePanel({ board, onDone }: Props) {
   const p = board.traceParams;
 
   const [sizeMm, setSizeMm] = useState(p?.size_mm ?? 50);
-  const [mode, setMode] = useState<TraceParams["mode"]>(p?.mode ?? "centerline");
+  const [mode, setMode] = useState<TraceMode>(p?.mode ?? "centerline");
   const [preset, setPreset] = useState<TraceParams["preset"]>(p?.preset ?? "line");
   const [invert, setInvert] = useState(p?.invert ?? false);
   const [autoCut, setAutoCut] = useState((p?.threshold ?? null) === null);
   const [threshold, setThreshold] = useState(p?.threshold ?? 128);
+  const [hatchSpacing, setHatchSpacing] = useState(p?.hatch_spacing_mm ?? 0.4);
+  const [hatchAngle, setHatchAngle] = useState(p?.hatch_angle ?? 45);
+  const [hatchCross, setHatchCross] = useState(p?.hatch_cross ?? false);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +43,9 @@ export default function RetracePanel({ board, onDone }: Props) {
         preset,
         threshold: autoCut ? null : threshold,
         invert,
+        hatch_spacing_mm: hatchSpacing,
+        hatch_angle: hatchAngle,
+        hatch_cross: hatchCross,
       });
       onDone(next);
     } catch (e) {
@@ -99,12 +106,24 @@ export default function RetracePanel({ board, onDone }: Props) {
         <select
           value={mode}
           disabled={busy}
-          onChange={(e) => setMode(e.target.value as TraceParams["mode"])}
+          onChange={(e) => setMode(e.target.value as TraceMode)}
           className="field mt-1 w-full"
         >
           <option value="centerline">Centreline — down the middle</option>
           <option value="outline">Outline — around each shape</option>
+          <option value="fill">Fill — covers copper for etch resist</option>
         </select>
+        {mode === "fill" && (
+          <HatchFields
+            spacing={hatchSpacing}
+            setSpacing={setHatchSpacing}
+            angle={hatchAngle}
+            setAngle={setHatchAngle}
+            cross={hatchCross}
+            setCross={setHatchCross}
+            disabled={busy}
+          />
+        )}
       </div>
 
       <div className="mt-4 border-t border-line pt-4">

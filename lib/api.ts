@@ -61,14 +61,20 @@ export type Board = {
   hasSource?: boolean;
 };
 
+export type TraceMode = "centerline" | "outline" | "fill";
+
 export type TraceParams = {
   /** longest edge in mm; 0 fits the bed */
   size_mm: number;
-  mode: "centerline" | "outline";
+  mode: TraceMode;
   preset: "line" | "pcb";
   /** null means Otsu picks it */
   threshold: number | null;
   invert: boolean;
+  /** fill mode only — gap between hatch lines; must be <= the pen width */
+  hatch_spacing_mm?: number;
+  hatch_angle?: number;
+  hatch_cross?: boolean;
 };
 
 export type TraceInfo = {
@@ -204,6 +210,11 @@ export const api = {
     fd.append("mode", params.mode);
     fd.append("preset", params.preset);
     fd.append("invert", String(params.invert));
+    if (params.mode === "fill") {
+      fd.append("hatch_spacing_mm", String(params.hatch_spacing_mm ?? 0.4));
+      fd.append("hatch_angle", String(params.hatch_angle ?? 45));
+      fd.append("hatch_cross", String(params.hatch_cross ?? false));
+    }
     // omitted entirely means "pick it automatically" on the server
     if (params.threshold !== null) {
       fd.append("threshold", String(params.threshold));

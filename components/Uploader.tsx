@@ -3,7 +3,8 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
-import { api } from "@/lib/api";
+import { api, type TraceMode } from "@/lib/api";
+import HatchFields from "@/components/HatchFields";
 
 export default function Uploader() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -19,9 +20,12 @@ export default function Uploader() {
   // big the result should be — an image has pixels, the machine has mm.
   const isImage = !!file && file.type.startsWith("image/");
   const [sizeMm, setSizeMm] = useState(50);
-  const [mode, setMode] = useState<"centerline" | "outline">("centerline");
+  const [mode, setMode] = useState<TraceMode>("centerline");
   const [preset, setPreset] = useState<"line" | "pcb">("line");
   const [invert, setInvert] = useState(false);
+  const [hatchSpacing, setHatchSpacing] = useState(0.4);
+  const [hatchAngle, setHatchAngle] = useState(45);
+  const [hatchCross, setHatchCross] = useState(false);
 
   function pick(files: FileList | null) {
     if (files && files.length) {
@@ -46,6 +50,9 @@ export default function Uploader() {
             preset,
             threshold: null,
             invert,
+            hatch_spacing_mm: hatchSpacing,
+            hatch_angle: hatchAngle,
+            hatch_cross: hatchCross,
           })
         : await api.route(file, session.email);
       router.push(`/dashboard/projects/${board.id}`);
@@ -137,13 +144,12 @@ export default function Uploader() {
                   <span className="tlabel">trace mode</span>
                   <select
                     value={mode}
-                    onChange={(e) =>
-                      setMode(e.target.value as "centerline" | "outline")
-                    }
+                    onChange={(e) => setMode(e.target.value as TraceMode)}
                     className="field mt-1 w-full"
                   >
                     <option value="centerline">Centreline</option>
                     <option value="outline">Outline</option>
+                    <option value="fill">Fill — etch resist</option>
                   </select>
                 </label>
                 <label className="mt-5 flex items-center gap-2 text-sm text-ink-soft">
@@ -155,11 +161,23 @@ export default function Uploader() {
                   Light lines on dark
                 </label>
               </div>
+              {mode === "fill" && (
+                <HatchFields
+                  spacing={hatchSpacing}
+                  setSpacing={setHatchSpacing}
+                  angle={hatchAngle}
+                  setAngle={setHatchAngle}
+                  cross={hatchCross}
+                  setCross={setHatchCross}
+                  disabled={busy}
+                />
+              )}
+
               <p className="mt-3 text-xs text-muted">
                 Centreline draws one line down the middle of each stroke.
-                Outline draws around each shape — pick it for etch resist,
-                where a centreline would leave a wide trace only partly
-                covered.
+                Outline draws around each shape. Fill draws the outline and
+                then floods it — the only one that actually covers copper for
+                etch resist.
               </p>
             </div>
           )}

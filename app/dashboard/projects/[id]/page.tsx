@@ -197,7 +197,16 @@ export default function ProjectDetail() {
           </div>
           <div className="flex items-center gap-5 border-t border-line px-4 py-2.5">
             {traced ? (
-              <Legend color="var(--color-fcu)" label="traced centreline" />
+              <Legend
+                color="var(--color-fcu)"
+                label={
+                  board.traceParams?.mode === "fill"
+                    ? "hatch fill"
+                    : board.traceParams?.mode === "outline"
+                      ? "traced outline"
+                      : "traced centreline"
+                }
+              />
             ) : (
               <>
                 <Legend color="var(--color-fcu)" label="F.Cu draw" />
@@ -230,6 +239,14 @@ export default function ProjectDetail() {
               {!traced && <Metric k="Plot layer" v={board.layer} />}
               {traced && (
                 <Metric k="Source" v={board.traceParams?.preset ?? "—"} />
+              )}
+              {traced && board.traceParams?.mode === "fill" && (
+                <Metric
+                  k="Fill spacing"
+                  v={`${board.traceParams.hatch_spacing_mm ?? 0.4} mm${
+                    board.traceParams.hatch_cross ? " ×2" : ""
+                  }`}
+                />
               )}
               <Metric k="Draw moves" v={String(board.drawMoves)} />
               <Metric k="Travel moves" v={String(board.travelMoves)} />

@@ -64,8 +64,13 @@ into paths.
   the drawing comes out 50 mm.
 - **Centreline** draws one line down the middle of each stroke. Right for line
   art, diagrams, and text.
-- **Outline** draws around each filled shape. Pick it for etch resist: a
-  centreline down a wide trace leaves most of the copper uncovered.
+- **Outline** draws around each filled shape — the silhouette edge only.
+- **Fill** draws the outline and then floods it with parallel strokes. This is
+  the one to use for **etch resist**: centreline draws down the middle of a
+  trace and outline draws its edge, so neither covers the copper, and the etch
+  gets everything they missed. Set the line spacing to your pen's width or a
+  little under; cross-hatching adds a second pass at 90° and covers far more
+  reliably for double the plotting time.
 - **PCB source** switches to adaptive thresholding, which copes with the uneven
   lighting in a photo of a board, keeps corners sharp, and preserves small pad
   marks.
@@ -75,9 +80,10 @@ it with different settings — size, mode, preset, threshold, invert — without
 re-uploading. The board keeps its id and name, so the link stays valid and a
 rename is not undone. Deleting the board deletes the stored source with it.
 
-Two known limits, both inherent to single-line drawing: a filled shape becomes
-a spidery skeleton rather than a filled area, and a perfect disc thins to a
-single point, so it has no centreline at all and is rejected with an error.
+Two limits of **centreline** mode specifically: a filled shape becomes a
+spidery skeleton rather than a filled area, and a perfect disc thins to a
+single point — its medial axis is its centre — so it has no centreline at all
+and is rejected with an error. Both are what fill mode is for.
 
 Every traced board stores a pen-up alignment frame alongside its G-code. Run
 the frame first to check placement — it costs nothing and it is the cheapest
