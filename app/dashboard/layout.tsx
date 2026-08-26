@@ -5,7 +5,6 @@ import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import Logo from "@/components/Logo";
 import { useAuth } from "@/lib/auth";
-import { device } from "@/lib/data";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: OverviewIcon },
@@ -25,16 +24,18 @@ export default function DashboardLayout({
   useEffect(() => {
     if (!ready) return;
     if (!session) router.replace("/login");
-    else if (!session.deviceId) router.replace("/connect");
+    else if (!session.device) router.replace("/connect");
   }, [ready, session, router]);
 
-  if (!ready || !session || !session.deviceId) {
+  if (!ready || !session || !session.device) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-paper">
         <span className="tlabel animate-pulse">loading workbench…</span>
       </div>
     );
   }
+
+  const device = session.device;
 
   return (
     <div className="flex min-h-screen bg-paper">

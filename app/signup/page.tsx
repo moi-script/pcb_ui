@@ -13,12 +13,20 @@ export default function SignUp() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!name || !email || !pw) return;
-    signUp(name, email);
-    router.push("/connect");
+    setBusy(true);
+    setError(null);
+    const res = await signUp(name, email, pw);
+    if (res.ok) router.push("/connect");
+    else {
+      setError(res.error ?? "Something went wrong.");
+      setBusy(false);
+    }
   }
 
   return (
@@ -65,8 +73,15 @@ export default function SignUp() {
                   autoComplete="new-password"
                 />
               </Labeled>
-              <button className="btn btn-copper w-full" type="submit">
-                Create account →
+              {error && (
+                <p className="text-sm text-danger">{error}</p>
+              )}
+              <button
+                className="btn btn-copper w-full"
+                type="submit"
+                disabled={busy}
+              >
+                {busy ? "Creating…" : "Create account →"}
               </button>
             </form>
 

@@ -8,17 +8,25 @@ import AuthAside from "@/components/AuthAside";
 import { useAuth } from "@/lib/auth";
 
 export default function LogIn() {
-  const { signIn, session } = useAuth();
+  const { signIn } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!email || !pw) return;
-    signIn(email);
-    // If already paired, go straight to the dashboard; otherwise pair first.
-    router.push(session?.deviceId ? "/dashboard" : "/connect");
+    setBusy(true);
+    setError(null);
+    const res = await signIn(email, pw);
+    // The dashboard guard sends unpaired accounts to /connect.
+    if (res.ok) router.push("/dashboard");
+    else {
+      setError(res.error ?? "Something went wrong.");
+      setBusy(false);
+    }
   }
 
   return (
@@ -60,16 +68,21 @@ export default function LogIn() {
                   autoComplete="current-password"
                 />
               </label>
-              <button className="btn btn-primary w-full" type="submit">
-                Sign in →
+              {error && <p className="text-sm text-danger">{error}</p>}
+              <button
+                className="btn btn-primary w-full"
+                type="submit"
+                disabled={busy}
+              >
+                {busy ? "Signing in…" : "Sign in →"}
               </button>
             </form>
 
             <div className="mt-6 rounded border border-line bg-panel p-3 text-xs text-muted">
-              <span className="tlabel">demo</span>
+              <span className="tlabel">new here?</span>
               <p className="mt-1 font-mono">
-                Any email + password works. You&apos;ll pair the demo machine{" "}
-                <span className="text-copper">TW-3F9A-C210</span> next.
+                Accounts are stored for real now. Create one first, then pair a
+                machine with its device ID.
               </p>
             </div>
 

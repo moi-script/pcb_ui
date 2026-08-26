@@ -1,9 +1,13 @@
 "use client";
 
 import { useMemo } from "react";
-import { board, type Track } from "@/lib/board";
+import { board as sampleBoard, type Track } from "@/lib/board";
 
 type Props = {
+  /** tracks to render; defaults to the built-in labExam sample */
+  tracks?: Track[];
+  width?: number;
+  height?: number;
   showFront?: boolean;
   showBack?: boolean;
   /** draw each trace on mount */
@@ -20,34 +24,41 @@ function len(t: Track) {
 }
 
 export default function PcbBoard({
+  tracks: tracksIn,
+  width: widthIn,
+  height: heightIn,
   showFront = true,
   showBack = true,
   animate = false,
   toolpath = false,
   className,
 }: Props) {
+  const allTracks = tracksIn ?? sampleBoard.tracks;
+  const width = widthIn ?? sampleBoard.width;
+  const height = heightIn ?? sampleBoard.height;
+
   const tracks = useMemo(
     () =>
-      board.tracks.filter(
+      allTracks.filter(
         (t) =>
           (t.layer === "F.Cu" && showFront) ||
           (t.layer === "B.Cu" && showBack)
       ),
-    [showFront, showBack]
+    [allTracks, showFront, showBack]
   );
 
   // Straight hops between consecutive front traces — evokes pen-up travel.
   const hops = useMemo(() => {
     if (!toolpath) return [];
-    const f = board.tracks.filter((t) => t.layer === "F.Cu");
+    const f = allTracks.filter((t) => t.layer === "F.Cu");
     const out: { x1: number; y1: number; x2: number; y2: number }[] = [];
     for (let i = 1; i < f.length; i++) {
       out.push({ x1: f[i - 1].x2, y1: f[i - 1].y2, x2: f[i].x1, y2: f[i].y1 });
     }
     return out;
-  }, [toolpath]);
+  }, [allTracks, toolpath]);
 
-  const vb = `${-PAD} ${-PAD} ${board.width + PAD * 2} ${board.height + PAD * 2}`;
+  const vb = `${-PAD} ${-PAD} ${width + PAD * 2} ${height + PAD * 2}`;
 
   return (
     <svg
@@ -60,8 +71,8 @@ export default function PcbBoard({
       <rect
         x={-1.5}
         y={-1.5}
-        width={board.width + 3}
-        height={board.height + 3}
+        width={width + 3}
+        height={height + 3}
         fill="none"
         stroke="var(--color-line-strong)"
         strokeWidth={0.3}

@@ -20,27 +20,28 @@ export default function Connect() {
   const [id, setId] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [step, setStep] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
-  // drive the fake handshake
+  // drive the handshake animation, then actually pair via the API
   useEffect(() => {
     if (phase !== "pairing") return;
     if (step < STEPS.length) {
       const t = setTimeout(() => setStep((s) => s + 1), 620);
       return () => clearTimeout(t);
     }
-    // finished
-    const ok = normalize(id) === DEMO_DEVICE_ID;
-    const t = setTimeout(() => {
-      if (ok) {
-        // pairDevice binds to the current account, or creates a guest one
-        // if you paired straight from the landing page.
-        pairDevice(DEMO_DEVICE_ID);
-        setPhase("bound");
-      } else {
+    let cancelled = false;
+    (async () => {
+      const res = await pairDevice(normalize(id));
+      if (cancelled) return;
+      if (res.ok) setPhase("bound");
+      else {
+        setError(res.error ?? "Pairing failed.");
         setPhase("error");
       }
-    }, 400);
-    return () => clearTimeout(t);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [phase, step, id, pairDevice]);
 
   function start(e: React.FormEvent) {
@@ -80,8 +81,7 @@ export default function Connect() {
                 />
                 {phase === "error" && (
                   <p className="mt-3 text-center text-sm text-danger">
-                    No machine answered to that ID. Check the controller and try
-                    again.
+                    {error ?? "Couldn't pair that ID. Try again."}
                   </p>
                 )}
                 <button className="btn btn-copper mt-4 w-full" type="submit">

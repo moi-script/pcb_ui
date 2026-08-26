@@ -2,19 +2,41 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth";
+import { api } from "@/lib/api";
 
 export default function Uploader() {
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
-  const [file, setFile] = useState<string | null>(null);
+  const { session } = useAuth();
+
+  const [file, setFile] = useState<File | null>(null);
   const [drag, setDrag] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   function pick(files: FileList | null) {
-    if (files && files.length) setFile(files[0].name);
+    if (files && files.length) {
+      setFile(files[0]);
+      setError(null);
+    }
   }
 
   function openPicker() {
     inputRef.current?.click();
+  }
+
+  async function routeFile() {
+    if (!file || !session) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const board = await api.route(file, session.email);
+      router.push(`/dashboard/projects/${board.id}`);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
   }
 
   return (
@@ -29,8 +51,6 @@ export default function Uploader() {
         setDrag(false);
         pick(e.dataTransfer.files);
       }}
-      // Only the empty card is click-to-browse. Once a file is loaded the card
-      // is inert, so the action buttons below don't reopen the file picker.
       onClick={file ? undefined : openPicker}
       role={file ? undefined : "button"}
       tabIndex={file ? undefined : 0}
@@ -45,7 +65,6 @@ export default function Uploader() {
           : "border-line-strong bg-panel hover:border-copper hover:bg-panel-2"
       }`}
     >
-      {/* the real file input — this is what opens the OS file manager */}
       <input
         ref={inputRef}
         type="file"
@@ -58,25 +77,31 @@ export default function Uploader() {
 
       {file ? (
         <>
-          <p className="mt-3 font-mono text-sm text-ink">{file}</p>
+          <p className="mt-3 font-mono text-sm text-ink">{file.name}</p>
           <p className="mt-1 max-w-md text-xs text-muted">
-            Routing turns a board into a pen toolpath and G-code. This prototype
-            doesn&apos;t parse your own file yet, so it opens a fully routed
-            sample so you can see what the result looks like.
+            Routing reads the board, plans the pen path, and generates the
+            G-code on the server, then saves the result to your account.
           </p>
+
+          {error && (
+            <p className="mt-3 max-w-md text-sm text-danger">{error}</p>
+          )}
+
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
             <button
               type="button"
+              disabled={busy}
               onClick={(e) => {
                 e.stopPropagation();
-                router.push("/dashboard/projects/labexam");
+                routeFile();
               }}
               className="btn btn-copper"
             >
-              See a routed board
+              {busy ? "Routing…" : "Route this board"}
             </button>
             <button
               type="button"
+              disabled={busy}
               onClick={(e) => {
                 e.stopPropagation();
                 openPicker();
