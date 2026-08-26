@@ -185,6 +185,7 @@ export default function ProjectDetail() {
             <PcbBoard
               key={`${front}${back}${toolpath}${replay}`}
               tracks={board.tracks}
+              strokes={board.strokes}
               width={board.width}
               height={board.height}
               showFront={front}
