@@ -37,7 +37,7 @@ The frontend calls the API at `http://localhost:8000` by default. Override with
 | `/signup`, `/login` | Account creation / sign-in (stored in MongoDB via the API) |
 | `/connect` | **Device pairing**: enter the device ID, watch the FluidNC handshake, bind it to your account |
 | `/dashboard` | Overview: paired device, your routed boards, travel-saved stats |
-| `/dashboard/projects` | Upload a `.kicad_pcb`; it's routed by the API and saved to your account |
+| `/dashboard/projects` | Upload a `.kicad_pcb` to route, or an image to trace; both are saved to your account |
 | `/dashboard/projects/[id]` | Board detail: layer-toggle preview of the real traces, route report, real G-code (downloadable), stream-to-device with a dry-check |
 | `/dashboard/device` | Device identity, machine profile, unpair |
 
@@ -51,6 +51,32 @@ The frontend calls the API at `http://localhost:8000` by default. Override with
   localStorage so the browser remembers who's signed in.
 - The built-in `labExam` sample geometry in `board_raw.json` is only used for the
   marketing/landing previews, not the dashboard.
+
+### Tracing an image
+
+Upload a PNG or JPG instead of a `.kicad_pcb` and the API traces it to a
+single-line pen path. No Inkscape, no jscut: the image is thinned to a
+one-pixel skeleton down the middle of each stroke, and that skeleton is walked
+into paths.
+
+- **Longest edge (mm) is required.** An image has pixels, a machine has
+  millimetres, and there is no DPI worth trusting in a photo. Ask for 50 mm and
+  the drawing comes out 50 mm.
+- **Centreline** draws one line down the middle of each stroke. Right for line
+  art, diagrams, and text.
+- **Outline** draws around each filled shape. Pick it for etch resist: a
+  centreline down a wide trace leaves most of the copper uncovered.
+- **PCB source** switches to adaptive thresholding, which copes with the uneven
+  lighting in a photo of a board, keeps corners sharp, and preserves small pad
+  marks.
+
+Two known limits, both inherent to single-line drawing: a filled shape becomes
+a spidery skeleton rather than a filled area, and a perfect disc thins to a
+single point, so it has no centreline at all and is rejected with an error.
+
+Every traced board stores a pen-up alignment frame alongside its G-code. Run
+the frame first to check placement — it costs nothing and it is the cheapest
+way to find out the drawing runs off the edge of the work.
 
 ## Caveats (prototype)
 - Auth is intentionally simple: passwords are hashed (PBKDF2) but there's no
