@@ -206,8 +206,18 @@ export default function Projects() {
                 )}
               </div>
               <dl className="grid grid-cols-3 divide-x divide-line border-t border-line text-center">
-                <Cell k="tracks" v={String(b.fcu + b.bcu)} />
-                <Cell k="nets" v={String(b.nets)} />
+                <Cell
+                  k={b.source === "image" ? "strokes" : "tracks"}
+                  v={String(b.fcu + b.bcu)}
+                />
+                <Cell
+                  k={b.source === "image" ? "mode" : "nets"}
+                  v={
+                    b.source === "image"
+                      ? (b.traceParams?.mode ?? "traced")
+                      : String(b.nets)
+                  }
+                />
                 <Cell k="mm" v={String(b.width)} />
               </dl>
                 </Link>

@@ -123,7 +123,9 @@ export default function Overview() {
                     <p className="font-mono text-sm text-ink">
                       {b.fcu + b.bcu}
                     </p>
-                    <p className="tlabel !text-[0.6rem]">tracks</p>
+                    <p className="tlabel !text-[0.6rem]">
+                      {b.source === "image" ? "strokes" : "tracks"}
+                    </p>
                   </div>
                   <span
                     className={`tlabel w-20 text-right ${

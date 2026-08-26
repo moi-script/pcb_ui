@@ -42,7 +42,10 @@ export default function PcbBoard({
   toolpath = false,
   className,
 }: Props) {
-  const allTracks = tracksIn ?? sampleBoard.tracks;
+  // The sample is the landing page's placeholder, for `<PcbBoard />` with no
+  // props. A stroke-based board that came back empty must render empty, not
+  // silently show someone else's board.
+  const allTracks = tracksIn ?? (strokes ? [] : sampleBoard.tracks);
   const width = widthIn ?? sampleBoard.width;
   const height = heightIn ?? sampleBoard.height;
   const usingStrokes = !!strokes?.length;
