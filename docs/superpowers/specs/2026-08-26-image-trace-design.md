@@ -218,6 +218,24 @@ New tests beyond the ported ones:
 - **Replacing the KiCad path.** `/route` stays exactly as it is.
 - **Touching `C:\cnc_line_backend\cnc_1line_tracer-main`.** Read-only reference.
 
+## Superseded during implementation
+
+- **Derived `tracks` were removed.** This spec had a traced board store its
+  strokes flattened into two-point `Track`s so `PcbBoard.tsx` could render it
+  untouched. `PcbBoard` was instead taught to draw strokes as polylines, which
+  is truer (a stroke *is* one path), ~60× fewer SVG elements, and makes the
+  pen-up overlay exact. The flattened copy then became 1.69 MB of a 2.67 MB
+  document that nothing read, so it is gone. Strokes are the only geometry.
+- **Size is applied to the finished strokes**, not derived from the bitmap.
+  The cleaner crops with a 4 px pad and thinning tapers stroke ends, so a
+  bitmap-derived scale made `size_mm` mean "the cropped bitmap's longest edge"
+  — about 9% larger than the ink actually drawn.
+- **The boards list sends a decimated `thumbStrokes` set**, not full geometry.
+  This was not foreseen: a grid of four traced boards was a 4.3 MB response to
+  draw four postage stamps. Now 99 KB.
+- **Re-trace keeps the source image in GridFS.** The spec assumed re-posting
+  the file; keeping it means one click instead of a re-upload per attempt.
+
 ## Open decisions
 
 1. **Which backend this lands in.** Written against the current committed
