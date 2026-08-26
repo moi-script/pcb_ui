@@ -15,6 +15,14 @@ export default function Uploader() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // An image gets traced instead of routed, and tracing needs to be told how
+  // big the result should be — an image has pixels, the machine has mm.
+  const isImage = !!file && file.type.startsWith("image/");
+  const [sizeMm, setSizeMm] = useState(50);
+  const [mode, setMode] = useState<"centerline" | "outline">("centerline");
+  const [preset, setPreset] = useState<"line" | "pcb">("line");
+  const [invert, setInvert] = useState(false);
+
   function pick(files: FileList | null) {
     if (files && files.length) {
       setFile(files[0]);
@@ -31,7 +39,15 @@ export default function Uploader() {
     setBusy(true);
     setError(null);
     try {
-      const board = await api.route(file, session.email);
+      const board = isImage
+        ? await api.trace(file, session.email, {
+            size_mm: sizeMm,
+            mode,
+            preset,
+            threshold: null,
+            invert,
+          })
+        : await api.route(file, session.email);
       router.push(`/dashboard/projects/${board.id}`);
     } catch (e) {
       setError((e as Error).message);
@@ -68,7 +84,7 @@ export default function Uploader() {
       <input
         ref={inputRef}
         type="file"
-        accept=".kicad_pcb,.pcb,.pro"
+        accept=".kicad_pcb,.pcb,.pro,image/png,image/jpeg,image/bmp,image/webp"
         className="hidden"
         onChange={(e) => pick(e.target.files)}
       />
@@ -79,9 +95,74 @@ export default function Uploader() {
         <>
           <p className="mt-3 font-mono text-sm text-ink">{file.name}</p>
           <p className="mt-1 max-w-md text-xs text-muted">
-            Routing reads the board, plans the pen path, and generates the
-            G-code on the server, then saves the result to your account.
+            {isImage
+              ? "Tracing finds the centre of every line in the image and turns it into a pen path, then saves the result to your account."
+              : "Routing reads the board, plans the pen path, and generates the G-code on the server, then saves the result to your account."}
           </p>
+
+          {isImage && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="mt-4 w-full max-w-md rounded border border-line bg-panel-2 p-3 text-left"
+            >
+              <span className="tlabel">trace options</span>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="tlabel">longest edge (mm)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={300}
+                    value={sizeMm}
+                    onChange={(e) => setSizeMm(Number(e.target.value))}
+                    className="field mt-1 w-full"
+                  />
+                </label>
+                <label className="block">
+                  <span className="tlabel">source</span>
+                  <select
+                    value={preset}
+                    onChange={(e) =>
+                      setPreset(e.target.value as "line" | "pcb")
+                    }
+                    className="field mt-1 w-full"
+                  >
+                    <option value="line">Line art</option>
+                    <option value="pcb">PCB photo</option>
+                  </select>
+                </label>
+              </div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="tlabel">trace mode</span>
+                  <select
+                    value={mode}
+                    onChange={(e) =>
+                      setMode(e.target.value as "centerline" | "outline")
+                    }
+                    className="field mt-1 w-full"
+                  >
+                    <option value="centerline">Centreline</option>
+                    <option value="outline">Outline</option>
+                  </select>
+                </label>
+                <label className="mt-5 flex items-center gap-2 text-sm text-ink-soft">
+                  <input
+                    type="checkbox"
+                    checked={invert}
+                    onChange={(e) => setInvert(e.target.checked)}
+                  />
+                  Light lines on dark
+                </label>
+              </div>
+              <p className="mt-3 text-xs text-muted">
+                Centreline draws one line down the middle of each stroke.
+                Outline draws around each shape — pick it for etch resist,
+                where a centreline would leave a wide trace only partly
+                covered.
+              </p>
+            </div>
+          )}
 
           {error && (
             <p className="mt-3 max-w-md text-sm text-danger">{error}</p>
@@ -97,7 +178,13 @@ export default function Uploader() {
               }}
               className="btn btn-copper"
             >
-              {busy ? "Routing…" : "Route this board"}
+              {isImage
+                ? busy
+                  ? "Tracing…"
+                  : "Trace this image"
+                : busy
+                  ? "Routing…"
+                  : "Route this board"}
             </button>
             <button
               type="button"
@@ -115,11 +202,11 @@ export default function Uploader() {
       ) : (
         <>
           <p className="mt-3 text-sm text-ink">
-            Drop a <span className="font-mono text-copper">.kicad_pcb</span> file
-            to route it
+            Drop a <span className="font-mono text-copper">.kicad_pcb</span> to
+            route it, or an image to trace it
           </p>
           <p className="mt-1 text-xs text-muted">
-            Single-layer boards · KiCad 10 parser · coordinates in mm
+            Single-layer boards · KiCad 10 parser · PNG/JPG centreline tracing
           </p>
           <span className="btn btn-ghost mt-4">Browse files</span>
         </>

@@ -51,6 +51,28 @@ export type Board = {
   createdAt: string;
   tracks?: Track[];
   gcode?: string;
+  /** traced boards only — the authoritative geometry the G-code came from */
+  strokes?: number[][][];
+  source?: "kicad" | "image";
+  traceParams?: TraceParams;
+  traceInfo?: TraceInfo;
+  frameGcode?: string;
+};
+
+export type TraceParams = {
+  /** longest edge in mm; 0 fits the bed */
+  size_mm: number;
+  mode: "centerline" | "outline";
+  preset: "line" | "pcb";
+  /** null means Otsu picks it */
+  threshold: number | null;
+  invert: boolean;
+};
+
+export type TraceInfo = {
+  inkCoverage: number;
+  strokeCount: number;
+  warnings: string[];
 };
 
 export type PrintStart = { ok: boolean; total: number; check: boolean };
@@ -168,6 +190,31 @@ export const api = {
     const text = await res.text();
     const data = text ? JSON.parse(text) : null;
     if (!res.ok) throw new Error(data?.detail || "Routing failed.");
+    return data as Board;
+  },
+
+  // multipart upload -> centerline trace -> stored board
+  async trace(file: File, email: string, params: TraceParams): Promise<Board> {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("email", email);
+    fd.append("size_mm", String(params.size_mm));
+    fd.append("mode", params.mode);
+    fd.append("preset", params.preset);
+    fd.append("invert", String(params.invert));
+    // omitted entirely means "pick it automatically" on the server
+    if (params.threshold !== null) {
+      fd.append("threshold", String(params.threshold));
+    }
+    let res: Response;
+    try {
+      res = await fetch(`${API_URL}/trace`, { method: "POST", body: fd });
+    } catch {
+      throw new Error("Can't reach the server. Is the API running?");
+    }
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok) throw new Error(data?.detail || "Tracing failed.");
     return data as Board;
   },
 };
