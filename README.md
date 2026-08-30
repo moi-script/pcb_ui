@@ -11,26 +11,68 @@ and stream it to a FluidNC machine, paired to your account by **device ID**.
 - Fonts: Space Grotesk (display/UI) + IBM Plex Mono (data)
 - Talks to the Python API in `../pcb_reader` (FastAPI + MongoDB)
 
-## Run
+## What's in this repo
 
-You need **two servers** running: the Python API and this frontend.
+Two separate apps live here.
+
+| Path | What it is |
+|------|-----------|
+| `.` (repo root) | **`traceworks-ui`** — the product frontend. Next.js only, no server of its own; it talks to the Python API in the separate [`pcb_reader`](../pcb_reader) repo (FastAPI + MongoDB). |
+| `machine-control-slice-1/` | **The workbench app** — self-contained full stack: its own Next.js UI *and* its own FastAPI backend in `server/` that owns the serial port, tracks machine state, and streams G-code to GRBL/FluidNC. Has a simulator, so it runs without hardware. |
+
+They are independent: different pages, different backends. Both default to port
+`3000` for the UI and `8000` for the API, so run one stack at a time unless you
+change a port.
+
+## Run — the product frontend (repo root)
+
+You need **two servers**: the Python API and this frontend.
 
 ```bash
 # 1. Backend (in ../pcb_reader) — parses boards, generates G-code, stores in Mongo
 #    Requires a local MongoDB on mongodb://localhost:27017
 cd ../pcb_reader
 pip install -r requirements.txt
-uvicorn server:app --reload --port 8000
+uvicorn server:app --reload --port 8000     # or: python server.py
 
 # 2. Frontend (this folder)
 npm install
 npm run dev            # http://localhost:3000
 ```
 
-The frontend calls the API at `http://localhost:8000` by default. Override with
-`NEXT_PUBLIC_API_URL` in a `.env.local` if your API runs elsewhere.
+The frontend calls the API at `http://localhost:8000` by default (`lib/api.ts`).
+Override with `NEXT_PUBLIC_API_URL` in a `.env.local` if your API runs elsewhere.
 
-## Pages
+## Run — the workbench app (`machine-control-slice-1/`)
+
+Everything it needs is inside that folder — no `pcb_reader`, no MongoDB.
+
+```bash
+cd machine-control-slice-1
+pip install -r server/requirements.txt      # fastapi, uvicorn, pyserial
+npm install
+npm run dev:all                             # API on :8000 + UI on :3000
+```
+
+Prefer two terminals, or want just one half?
+
+```bash
+npm run dev:api    # server side only — uvicorn server.main:app --reload --port 8000
+npm run dev        # client side only — Next.js on :3000
+```
+
+No machine plugged in? Run the simulator in place of the API, then pick the port
+named `SIM` in the UI:
+
+```bash
+python -m server.sim.serve_sim
+npm run dev
+```
+
+Its frontend also reads `NEXT_PUBLIC_API_URL`, defaulting to
+`http://localhost:8000` (`machine-control-slice-1/lib/machine.ts`).
+
+## Pages (repo root app)
 | Route | What it is |
 |-------|-----------|
 | `/` | Marketing landing: pipeline, device-pairing story, hardware, pricing |
