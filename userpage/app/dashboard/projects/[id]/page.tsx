@@ -2,12 +2,23 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import PcbBoard from "@/components/PcbBoard";
 import InlineEdit from "@/components/InlineEdit";
 import RetracePanel from "@/components/RetracePanel";
 import { useAuth } from "@/lib/auth";
 import { api, type Board } from "@/lib/api";
+
+// Three.js is ~600 KB and needs a DOM, so it loads on this page only, client-side.
+const GcodeVisualizer = dynamic(() => import("@/components/GcodeVisualizer"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[26rem] items-center justify-center font-mono text-xs text-faint">
+      loading visualizer…
+    </div>
+  ),
+});
 
 export default function ProjectDetail() {
   const params = useParams<{ id: string }>();
@@ -305,6 +316,19 @@ export default function ProjectDetail() {
           />
         </section>
       </div>
+
+      {/* toolpath simulation — reads the real G-code, not the stored geometry */}
+      {board.gcode && (
+        <section className="panel ticked mt-6">
+          <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+            <span className="tlabel">Toolpath simulation</span>
+            <span className="font-mono text-xs text-faint">
+              what the machine will actually run
+            </span>
+          </div>
+          <GcodeVisualizer gcode={board.gcode} />
+        </section>
+      )}
 
       {/* gcode viewer */}
       <section className="panel ticked mt-6">
