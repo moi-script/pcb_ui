@@ -12,8 +12,23 @@ from pcb_read import wiring_data
 
 # ---- Machine configuration (edit to match your plotter) --------------------
 CONFIG = {
-    "pen_up_z": 5.0,        # Z height with pen lifted (mm)
-    "pen_down_z": 0.0,      # Z height with pen touching the surface (mm)
+    # Z targets grbl_servo_z, where Z is an SG90 acting as a binary pen
+    # actuator, not a stepper. Its servo_set_z() is
+    #     if (z_steps < SERVO_Z_THRESHOLD_STEPS)   // threshold 0, strictly <
+    # so pen-down MUST be negative. A Z0 plunge reads as pen-up and plots the
+    # whole board in the air.
+    #
+    # The heights are symbolic: the servo throws the pen mechanically, so
+    # nothing here sets a physical clearance. Only the sign matters, and the
+    # travel, which is kept to 1 mm so a transition is quick.
+    "pen_up_z": 0.5,        # >= 0 -> servo holds the pen up
+    "pen_down_z": -0.5,     # < 0  -> servo drops the pen
+    # Z is still a fully planned Grbl axis, so a Z move's duration is what
+    # gives the servo time to travel; no dwell is needed. 1 mm at F200 is
+    # 300 ms, the budget the grbl_servo_z README sets for an SG90. Raising
+    # this feed or shortening the throw starts the next X/Y move before the
+    # pen has landed.
+    "z_feed": 200,          # speed for pen up/down moves (mm/min)
     "travel_feed": 3000,    # speed for pen-up moves (mm/min)
     "draw_feed": 800,       # speed while drawing (mm/min)
     "flip_y": False,        # set True if your machine's Y is inverted vs KiCad
@@ -68,6 +83,7 @@ def generate_gcode(data, cfg=CONFIG):
     """Return a list of G-code lines for the given wiring data."""
     up, down = cfg["pen_up_z"], cfg["pen_down_z"]
     tf, df = cfg["travel_feed"], cfg["draw_feed"]
+    zf = cfg.get("z_feed", 200)
 
     tracks = [r for r in data if r["type"] == "track"
               and (cfg["layer"] is None or r["layer"] == cfg["layer"])]
@@ -83,15 +99,17 @@ def generate_gcode(data, cfg=CONFIG):
         f"; pen-up travel = {travel_distance(pairs):.1f} mm",
         "G21",              # units = millimetres
         "G90",              # absolute positioning
-        f"G0 Z{up:g}",      # start with pen up
+        # Every Z move is a timed G1, never a G0: a rapid would reach the next
+        # X/Y before the servo has finished swinging.
+        f"G1 Z{up:g} F{zf}",   # start with pen up
     ]
 
     for (x0, y0), (x1, y1) in pairs:
         lines += [
             f"G0 X{x0:g} Y{_y(y0):g} F{tf}",   # travel to start (pen up)
-            f"G1 Z{down:g} F{tf}",             # pen down
+            f"G1 Z{down:g} F{zf}",             # pen down
             f"G1 X{x1:g} Y{_y(y1):g} F{df}",   # draw the trace
-            f"G0 Z{up:g}",                     # pen up
+            f"G1 Z{up:g} F{zf}",               # pen up
         ]
 
     lines += [

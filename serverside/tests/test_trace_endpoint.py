@@ -74,7 +74,8 @@ def test_gcode_line_count_matches_the_string(doc):
 
 
 def test_frame_gcode_never_draws(doc):
-    assert "G1 Z" not in doc["frameGcode"]
+    # Pen-down is a negative Z on grbl_servo_z; the lift is a timed G1 too.
+    assert "G1 Z-" not in doc["frameGcode"]
 
 
 def test_trace_params_are_kept_for_retracing(doc):

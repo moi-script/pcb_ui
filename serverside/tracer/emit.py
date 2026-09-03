@@ -73,7 +73,7 @@ def generate_from_strokes(strokes: list[Stroke], cfg: dict = CONFIG,
     down = cfg["pen_down_z"]
     travel_feed = cfg["travel_feed"]
     draw_feed = cfg["draw_feed"]
-    z_feed = cfg.get("z_feed", 500)
+    z_feed = cfg.get("z_feed", 200)
 
     minx, miny, maxx, maxy = bounds(strokes)
     out = [
@@ -84,7 +84,9 @@ def generate_from_strokes(strokes: list[Stroke], cfg: dict = CONFIG,
         "G21",   # millimetres
         "G90",   # absolute
         "G17",   # XY plane
-        f"G0 Z{_f(up)}",
+        # Every Z move is a timed G1, never a G0. Z drives a servo on
+        # grbl_servo_z, and a rapid gives it no time to travel.
+        f"G1 Z{_f(up)} F{_f(z_feed)}",
     ]
 
     for s in order_strokes(strokes):
@@ -93,7 +95,7 @@ def generate_from_strokes(strokes: list[Stroke], cfg: dict = CONFIG,
         out.append(f"G1 Z{_f(down)} F{_f(z_feed)}")
         for (x, y) in s[1:]:
             out.append(f"G1 X{_f(x)} Y{_f(y)} F{_f(draw_feed)}")
-        out.append(f"G0 Z{_f(up)}")
+        out.append(f"G1 Z{_f(up)} F{_f(z_feed)}")
 
     out.append("G0 X0 Y0")
     out.append("M2")
@@ -113,7 +115,7 @@ def emit_frame(bbox: tuple[float, float, float, float],
     out = [
         "; alignment frame - pen stays up",
         "G21", "G90", "G17",
-        f"G0 Z{_f(cfg['pen_up_z'])}",
+        f"G1 Z{_f(cfg['pen_up_z'])} F{_f(cfg.get('z_feed', 200))}",
     ]
     out += [f"G0 X{_f(x)} Y{_f(y)} F{_f(cfg['travel_feed'])}" for x, y in corners]
     out.append("G0 X0 Y0")

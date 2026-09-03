@@ -86,8 +86,8 @@ def default_device(device_id: str) -> dict:
         "connection": "WiFi",
         "port": "192.168.1.42",
         "bed": "300 × 300",
-        "penUpZ": 5,
-        "penDownZ": 0,
+        "penUpZ": 0.5,
+        "penDownZ": -0.5,
         "travelFeed": 3000,
         "drawFeed": 800,
     }

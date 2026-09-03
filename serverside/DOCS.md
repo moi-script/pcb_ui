@@ -70,7 +70,12 @@ labExam.kicad_pcb
 
 ### `pcb_gcode.py` — G-code exporter ✅ working
 - Converts `wiring_data` → G-code (`G21`/`G90`, pen-up travel, pen-down draw).
-- Config block at top: pen up/down Z, feed rates, Y-flip, target layer, optimize.
+- Config block at top: pen up/down Z, Z feed, feed rates, Y-flip, target layer,
+  optimize.
+
+Pen state is the **sign of Z**: negative is down, zero or above is up. That is
+what `grbl_servo_z` tests (`z_steps < 0`), and every Z move is a timed `G1` at
+`z_feed` so the servo has time to swing. See `tests/test_servo_gcode.py`.
 - Default target layer **F.Cu** (single-layer plot).
 - **Travel optimization** (`optimize_order`): greedy nearest-neighbour ordering
   with endpoint flipping. Header comment reports total pen-up travel.
@@ -106,11 +111,11 @@ labExam.kicad_pcb
 ```gcode
 G21              ; units = mm
 G90              ; absolute positioning
-G0 Z5            ; pen up
+G1 Z0.5 F200     ; pen up
 G0 X.. Y.. F3000 ; travel to trace start
-G1 Z0 F3000      ; pen down
+G1 Z-0.5 F200    ; pen down
 G1 X.. Y.. F800  ; draw the trace
-G0 Z5            ; pen up
+G1 Z0.5 F200     ; pen up
 ...
 G0 X0 Y0         ; return home
 M2               ; end

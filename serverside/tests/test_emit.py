@@ -11,8 +11,13 @@ TWO = [[(0.0, 0.0), (5.0, 0.0)], [(20.0, 20.0), (25.0, 20.0)]]
 
 
 def _pen_downs(lines: list[str]) -> int:
-    """How many times the pen goes down. One per stroke, or the job is wrong."""
-    return sum(1 for ln in lines if ln.startswith("G1 Z"))
+    """How many times the pen goes down. One per stroke, or the job is wrong.
+
+    Pen state is the sign of Z, not the motion word: on grbl_servo_z the pen
+    is down below zero and up at or above it, and every Z move is a timed G1
+    so the servo has time to swing. See tests/test_servo_gcode.py.
+    """
+    return sum(1 for ln in lines if ln.startswith("G1 Z-"))
 
 
 def test_one_stroke_is_one_pen_down():
@@ -37,7 +42,7 @@ def test_job_ends_pen_up():
     zs = [ln for ln in lines if ln.startswith(("G0 Z", "G1 Z"))]
     assert zs, "no Z motion at all"
     # the last Z move must be a retract, never a plunge
-    assert zs[-1].startswith("G0 Z")
+    assert not zs[-1].startswith("G1 Z-")
 
 
 def test_returns_to_origin():
@@ -82,7 +87,7 @@ def test_bounds():
 
 def test_frame_traces_the_bbox_pen_up():
     lines = emit.emit_frame(emit.bounds(TWO))
-    assert not any(ln.startswith("G1 Z") for ln in lines), "frame must not draw"
+    assert not any(ln.startswith("G1 Z-") for ln in lines), "frame must not draw"
     xs = [ln for ln in lines if ln.startswith("G0 X")]
     assert len(xs) >= 5, "a closed rectangle needs 4 corners plus the return"
 

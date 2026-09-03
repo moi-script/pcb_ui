@@ -130,8 +130,11 @@ axes:
         direction_pin: gpio.15
 
   # Pen lift on "Z" via a hobby servo. The G-code uses Z moves:
-  #   G0 Z5  = pen up,  G1 Z0 = pen down (see pcb_gcode.py CONFIG).
-  # FluidNC maps the Z position range to the servo pulse range below.
+  #   G1 Z0.5 = pen up,  G1 Z-0.5 = pen down (see pcb_gcode.py CONFIG).
+  #
+  # WARNING: the mapping below is the OLD Z0/Z5 convention and no longer
+  # matches what the generator emits. See "Two firmware paths" below before
+  # using this config.
   z:
     steps_per_mm: 100
     max_travel_mm: 5           # matches pen_up_z = 5 mm in pcb_gcode.py
@@ -154,6 +157,35 @@ start:
 - Tune `steps_per_mm` until a commanded 100 mm move measures 100 mm.
 - Adjust the servo `min_pulse_us` / `max_pulse_us` so the pen clearly lifts and
   touches. These must line up with `pen_up_z` / `pen_down_z` in `pcb_gcode.py`.
+
+---
+
+## Two firmware paths, two Z conventions
+
+The generator now targets **grbl_servo_z** (Grbl 1.1f on an Arduino, Z driven
+as an SG90 by `servo.c`). That firmware decides pen state from the sign of the
+machine Z position:
+
+```c
+if (z_steps < SERVO_Z_THRESHOLD_STEPS) { pen down; } else { pen up; }
+```
+
+with the threshold at `0` and the comparison strictly less than. So
+`pcb_gcode.py` emits `Z-0.5` for down and `Z0.5` for up, both as timed `G1`
+moves at `z_feed` (200 mm/min), because Z is a fully planned axis and the move's
+duration is what gives the servo time to travel. No dwell is needed.
+
+**The FluidNC config above predates this.** It maps a positive Z *range*
+(`0 .. max_travel_mm`) onto the servo pulse range, with `Z = 0` meaning pen
+DOWN — the opposite sign convention. Sending the current G-code to it
+unchanged will not plot correctly: `Z-0.5` falls outside the declared axis
+travel.
+
+If you are on FluidNC rather than grbl_servo_z, you need to either reconfigure
+that axis to cover negative Z, or set `pen_up_z` / `pen_down_z` in
+`pcb_gcode.py` back to `5.0` / `0.0` for that machine. The Z convention is a
+per-machine property, and only the grbl_servo_z path is currently exercised by
+the test suite (`tests/test_servo_gcode.py`).
 
 ---
 
