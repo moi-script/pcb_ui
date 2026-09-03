@@ -1,0 +1,20 @@
+# Core pipeline
+matplotlib
+
+# Web API (server.py) + MongoDB
+fastapi
+uvicorn[standard]
+python-multipart
+pymongo
+
+# Serial streaming (pcb_send.py), only needed to talk to real hardware
+pyserial
+
+# Image tracing (tracer/) — centerline skeletonisation
+numpy
+pillow
+scikit-image
+opencv-python
+
+# Tests
+pytest

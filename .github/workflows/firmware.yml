@@ -1,0 +1,36 @@
+name: firmware
+
+# Compile-check the ESP32 bridge sketch so firmware changes can't merge broken.
+# Runs only when firmware files change.
+
+on:
+  push:
+    paths:
+      - "serverside/firmware/**"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "serverside/firmware/**"
+      - ".github/workflows/firmware.yml"
+  workflow_dispatch:
+
+jobs:
+  compile:
+    name: arduino-cli compile (esp32)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile esp32_bridge sketch
+        uses: arduino/compile-sketches@v1
+        with:
+          # Generic ESP32 Dev Module; WiFi.h + WebServer.h ship with the core,
+          # so no extra libraries are needed.
+          fqbn: "esp32:esp32:esp32"
+          platforms: |
+            - name: "esp32:esp32"
+              source-url: "https://espressif.github.io/arduino-esp32/package_esp32_index.json"
+          sketch-paths: |
+            - serverside/firmware/esp32_bridge
+          verbose: true

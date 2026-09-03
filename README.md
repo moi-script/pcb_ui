@@ -1,78 +1,61 @@
-# TraceWorks — Web UI
+# TraceWorks
 
-A Next.js + TypeScript web app for the single-layer PCB pen-plotter pipeline in
-`../pcb_reader`. It's the "product" side of the vision in that repo's DOCS.md:
-upload a KiCad board, route it into G-code, preview the toolpath in the browser,
+The full stack for the single-layer PCB pen-plotter pipeline: upload a KiCad
+board or an image, route it into G-code, preview the toolpath in the browser,
 and stream it to a FluidNC machine, paired to your account by **device ID**.
 
-## Stack
-- Next.js 15 (App Router) + React 19 + TypeScript
-- Tailwind CSS v4 (custom "engineering instrument" theme, no gradient slop)
-- Fonts: Space Grotesk (display/UI) + IBM Plex Mono (data)
-- Talks to the Python API in `../pcb_reader` (FastAPI + MongoDB)
+Frontend and backend live side by side in this one repo.
 
-## What's in this repo
+```
+pcb_ui/
+├── serverside/              the backend  — Python, FastAPI + MongoDB
+├── userpage/                the frontend — Next.js 15 + React 19 + TypeScript
+├── machine-control-slice-1/ a separate workbench app (own UI + own server)
+├── docs/                    design specs and plans
+└── RUNNING.md               how to run both halves  ← start here
+```
 
-Two separate apps live here.
+## Run it
 
-| Path | What it is |
-|------|-----------|
-| `.` (repo root) | **`traceworks-ui`** — the product frontend. Next.js only, no server of its own; it talks to the Python API in the separate [`pcb_reader`](../pcb_reader) repo (FastAPI + MongoDB). |
-| `machine-control-slice-1/` | **The workbench app** — self-contained full stack: its own Next.js UI *and* its own FastAPI backend in `server/` that owns the serial port, tracks machine state, and streams G-code to GRBL/FluidNC. Has a simulator, so it runs without hardware. |
-
-They are independent: different pages, different backends. Both default to port
-`3000` for the UI and `8000` for the API, so run one stack at a time unless you
-change a port.
-
-## Run — the product frontend (repo root)
-
-You need **two servers**: the Python API and this frontend.
+**[RUNNING.md](RUNNING.md) is the full guide** — prerequisites, first-time
+install, environment variables, troubleshooting. The short version, two
+terminals:
 
 ```bash
-# 1. Backend (in ../pcb_reader) — parses boards, generates G-code, stores in Mongo
-#    Requires a local MongoDB on mongodb://localhost:27017
-cd ../pcb_reader
+# Terminal 1 — backend (needs MongoDB on localhost:27017)
+cd serverside
 pip install -r requirements.txt
-uvicorn server:app --reload --port 8000     # or: python server.py
+uvicorn server:app --reload --port 8000     # http://localhost:8000/docs
 
-# 2. Frontend (this folder)
+# Terminal 2 — frontend
+cd userpage
 npm install
-npm run dev            # http://localhost:3000
+npm run dev                                 # http://localhost:3000
 ```
 
-The frontend calls the API at `http://localhost:8000` by default (`lib/api.ts`).
-Override with `NEXT_PUBLIC_API_URL` in a `.env.local` if your API runs elsewhere.
+## Stack
 
-## Run — the workbench app (`machine-control-slice-1/`)
+**`userpage/`** — Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS v4
+(custom "engineering instrument" theme, no gradient slop). Fonts: Space Grotesk
+(display/UI) + IBM Plex Mono (data). No server of its own; it calls the API in
+`serverside/` at `http://localhost:8000` (`userpage/lib/api.ts`, override with
+`NEXT_PUBLIC_API_URL`).
 
-Everything it needs is inside that folder — no `pcb_reader`, no MongoDB.
+**`serverside/`** — FastAPI (`server.py`) wrapping the PCB pipeline
+(`pcb_read.py` → `pcb_gcode.py` → `pcb_send.py`) and the image tracer
+(`tracer/`). Accounts, devices, and routed boards are stored in MongoDB
+(`db.py`, database `traceworks`). It is also a standalone CLI pipeline —
+`python main.py` — and has its own [README](serverside/README.md),
+[DOCS.md](serverside/DOCS.md), and [HARDWARE.md](serverside/HARDWARE.md) for the
+ESP32 / FluidNC build.
 
-```bash
-cd machine-control-slice-1
-pip install -r server/requirements.txt      # fastapi, uvicorn, pyserial
-npm install
-npm run dev:all                             # API on :8000 + UI on :3000
-```
+**`machine-control-slice-1/`** — a separate, self-contained app on its own git
+worktree branch: its own Next.js UI *and* its own FastAPI backend that owns the
+serial port and streams G-code to GRBL/FluidNC. Has a simulator, so it runs
+without hardware. It uses neither `serverside/` nor `userpage/`, and it wants
+the same ports, so run one stack at a time. See RUNNING.md.
 
-Prefer two terminals, or want just one half?
-
-```bash
-npm run dev:api    # server side only — uvicorn server.main:app --reload --port 8000
-npm run dev        # client side only — Next.js on :3000
-```
-
-No machine plugged in? Run the simulator in place of the API, then pick the port
-named `SIM` in the UI:
-
-```bash
-python -m server.sim.serve_sim
-npm run dev
-```
-
-Its frontend also reads `NEXT_PUBLIC_API_URL`, defaulting to
-`http://localhost:8000` (`machine-control-slice-1/lib/machine.ts`).
-
-## Pages (repo root app)
+## Pages (`userpage/`)
 | Route | What it is |
 |-------|-----------|
 | `/` | Marketing landing: pipeline, device-pairing story, hardware, pricing |
