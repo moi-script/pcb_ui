@@ -11,8 +11,9 @@ type Props = {
   className?: string;
 };
 
-/* UGS conventions: red X, green Y, blue Z, yellow tool cone. The path colours
- * come from the site theme so the panel doesn't read as a bolted-on demo. */
+/* UGS conventions: red X, green Y, blue Z, and a tool marker at the pen tip.
+ * The path colours come from the site theme so the panel doesn't read as a
+ * bolted-on demo. */
 const COLOR = {
   draw: 0xc2571f, // --color-fcu
   travel: 0xc2b8a1, // --color-line-strong
@@ -21,15 +22,17 @@ const COLOR = {
   axisX: 0xc0392b,
   axisY: 0x2f7d55,
   axisZ: 0x2c5f8c,
-  cone: 0xe8b73a,
+  penBody: 0xe8b73a,
+  penMetal: 0xb8ac90,
+  penNib: 0x3a352a, // --color-ink-soft
   bg: 0xfcfaf4, // --color-panel-2
 };
 
 /**
  * Is this segment actually laying down ink?
  *
- * `rapid` alone isn't enough. The generator plunges with `G1 Z0`, which is a
- * feed move but draws nothing — colouring those as drawing puts a vertical
+ * `rapid` alone isn't enough. The generator plunges with a `G1 Z` move, which
+ * is a feed move but draws nothing — colouring those as drawing puts a vertical
  * copper spike over every trace. Ink needs a feed move that travels in XY.
  */
 function isDraw(s: Segment): boolean {
@@ -56,13 +59,91 @@ function buildTimeline(segments: Segment[]) {
   return { ends, drawnUpTo, rapidUpTo, total };
 }
 
+/**
+ * Display height for a G-code Z, as 0 (down) or 1 (up).
+ *
+ * The firmware reads Z as a flag, not a height: grbl_servo_z drops the pen
+ * below zero and lifts it at or above. The real lift is the servo's own
+ * mechanical throw, and the emitted numbers are ±0.5 mm — under a pixel on a
+ * 100 mm board. So the scene keeps pen state in unit Z and the lift height is
+ * applied as a scale, which makes it adjustable without touching a vertex or
+ * reinterpreting the file.
+ */
+function unitZ(z: number): number {
+  return z >= 0 ? 1 : 0;
+}
+
 function positions(segments: Segment[], draw: boolean) {
   const picked = segments.filter((s) => isDraw(s) === draw);
   const a = new Float32Array(picked.length * 6);
   picked.forEach((s, i) => {
-    a.set([s.x1, s.y1, s.z1, s.x2, s.y2, s.z2], i * 6);
+    a.set(
+      [s.x1, s.y1, unitZ(s.z1), s.x2, s.y2, unitZ(s.z2)],
+      i * 6,
+    );
   });
   return a;
+}
+
+/**
+ * A pen, tip at the group origin, body running up +Z.
+ *
+ * The tip is the tool point, so the origin is what gets placed on the
+ * toolpath — everything else hangs off it.
+ */
+function buildPen(length: number) {
+  const g = new THREE.Group();
+  const r = length * 0.075; // barrel radius
+  const parts: THREE.BufferGeometry[] = [];
+
+  const add = (
+    geom: THREE.BufferGeometry,
+    material: THREE.Material,
+    y: number,
+  ) => {
+    const m = new THREE.Mesh(geom, material);
+    m.position.y = y; // built along +Y, rotated to +Z below
+    g.add(m);
+    parts.push(geom);
+    return m;
+  };
+
+  const body = new THREE.MeshLambertMaterial({ color: COLOR.penBody });
+  const metal = new THREE.MeshLambertMaterial({ color: COLOR.penMetal });
+  const nib = new THREE.MeshLambertMaterial({ color: COLOR.penNib });
+
+  const nibH = length * 0.1;
+  const gripH = length * 0.22;
+  const barrelH = length * 0.68;
+
+  add(new THREE.ConeGeometry(r * 0.42, nibH, 16), nib, nibH / 2);
+  add(
+    new THREE.CylinderGeometry(r * 0.92, r * 0.42, gripH, 20),
+    body,
+    nibH + gripH / 2,
+  );
+  add(
+    new THREE.CylinderGeometry(r, r, length * 0.05, 20),
+    metal,
+    nibH + gripH + length * 0.025,
+  );
+  add(
+    new THREE.CylinderGeometry(r, r * 0.92, barrelH, 20),
+    body,
+    nibH + gripH + barrelH / 2,
+  );
+
+  // Pocket clip down the side of the barrel.
+  const clipH = barrelH * 0.55;
+  const clip = add(
+    new THREE.BoxGeometry(r * 0.44, clipH, r * 0.3),
+    metal,
+    nibH + gripH + barrelH * 0.72,
+  );
+  clip.position.z = r * 1.05;
+
+  g.rotation.x = Math.PI / 2; // +Y body becomes +Z, tip stays at the origin
+  return { pen: g, geometries: parts };
 }
 
 export default function GcodeVisualizer({ gcode, className }: Props) {
@@ -79,11 +160,19 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
   // mirrored into state for the slider, so rAF never waits on a React render.
   const progressRef = useRef(1);
   const [progress, setProgress] = useState(1);
+  // How high a pen-up reads in the scene, in mm. A view setting only: the
+  // G-code says ±0.5 mm because that is what the firmware wants, and the
+  // servo's real throw is mechanical. 0 until the scene sizes it to the board.
+  const liftRef = useRef(0);
+  const [lift, setLiftState] = useState(0);
+  const [maxLift, setMaxLift] = useState(0);
 
   // Imperative handles the animation loop pokes without re-running the effect.
   const api = useRef<{
     apply: (p: number) => void;
     resetView: () => void;
+    setLift: (mm: number) => void;
+    defaultLift: number;
     setTravelVisible: (v: boolean) => void;
   } | null>(null);
 
@@ -138,6 +227,8 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     const span = Math.max(maxX - minX, maxY - minY, 1);
+    // Big enough to read at a glance without the lifts dwarfing the drawing.
+    const defaultLift = Math.max(span * 0.05, 2);
 
     // Bed grid, 10 mm cells, anchored at the machine origin like a real bed
     // and stretched to cover the work wherever it sits on it.
@@ -192,16 +283,10 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
     );
     scene.add(travelLines);
 
-    // Tool marker: a cone with its tip at the tool position, pointing down.
-    const coneH = Math.max(span * 0.06, 2);
-    const coneGeom = new THREE.ConeGeometry(coneH * 0.35, coneH, 20);
-    coneGeom.translate(0, coneH / 2, 0); // tip at the mesh origin
-    coneGeom.rotateX(Math.PI / 2); // point down -Z
-    const cone = new THREE.Mesh(
-      coneGeom,
-      new THREE.MeshLambertMaterial({ color: COLOR.cone }),
+    const { pen, geometries: penGeoms } = buildPen(
+      Math.max(span * 0.16, 6),
     );
-    scene.add(cone);
+    scene.add(pen);
 
     scene.add(new THREE.AmbientLight(0xffffff, 1.7));
     const key = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -215,7 +300,21 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
     };
     resetView();
 
-    /** Place the cone and reveal the path up to `p` (0..1 by distance). */
+    /**
+     * Display lift, in mm. Pen state lives in the scene as unit Z, so raising
+     * or lowering the pen-up height is a scale on the line sets and a factor
+     * on the pen's own Z — no vertex is touched and the parsed G-code is
+     * untouched either.
+     */
+    let lift = liftRef.current;
+    const setLift = (mm: number) => {
+      lift = mm;
+      drawLines.scale.z = mm;
+      travelLines.scale.z = mm;
+      apply(progressRef.current);
+    };
+
+    /** Place the pen and reveal the path up to `p` (0..1 by distance). */
     const apply = (p: number) => {
       const { ends, drawnUpTo, rapidUpTo, total } = timeline;
       if (!segments.length || total === 0) {
@@ -239,10 +338,13 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
       const segLen = ends[i] - segStart;
       const t = segLen > 0 ? Math.min((target - segStart) / segLen, 1) : 1;
 
-      cone.position.set(
+      // Interpolating unit Z means the pen visibly rises and falls across a
+      // Z move rather than teleporting between the two states.
+      const uz = unitZ(s.z1) + (unitZ(s.z2) - unitZ(s.z1)) * t;
+      pen.position.set(
         s.x1 + (s.x2 - s.x1) * t,
         s.y1 + (s.y2 - s.y1) * t,
-        s.z1 + (s.z2 - s.z1) * t,
+        uz * lift,
       );
 
       // Reveal completed segments of each type. Two draw calls, whatever the
@@ -258,11 +360,17 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
     api.current = {
       apply,
       resetView,
+      setLift,
+      defaultLift,
       setTravelVisible: (v: boolean) => {
         travelLines.visible = v;
       },
     };
-    apply(progressRef.current);
+    const initial = liftRef.current || defaultLift;
+    liftRef.current = initial;
+    setLift(initial);
+    setLiftState(initial);
+    setMaxLift(Math.max(span * 0.25, 10));
 
     const resize = () => {
       const w = mount.clientWidth;
@@ -307,13 +415,16 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
       controls.dispose();
       drawGeom.dispose();
       travelGeom.dispose();
-      coneGeom.dispose();
+      penGeoms.forEach((g) => g.dispose());
       axisGeoms.forEach((g) => g.dispose());
       grid.geometry.dispose();
       (grid.material as THREE.Material).dispose();
       drawLines.material.dispose();
       travelLines.material.dispose();
-      cone.material.dispose();
+      pen.children.forEach((c) => {
+        const m = (c as THREE.Mesh).material as THREE.Material;
+        m.dispose();
+      });
       renderer.dispose();
       renderer.domElement.remove();
     };
@@ -388,6 +499,32 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
           </select>
         </label>
 
+        <label
+          className="flex items-center gap-1.5 font-mono text-xs text-muted"
+          title={
+            "How high a pen-up is drawn, for looking at only. The G-code keeps " +
+            "the ±0.5 mm the firmware needs — pen state is the sign of Z, " +
+            "and the real lift is the servo's own throw."
+          }
+        >
+          <span className="text-faint">lift</span>
+          <input
+            type="range"
+            min={0}
+            max={Math.max(Math.round(maxLift * 10), 10)}
+            value={Math.round(lift * 10)}
+            onChange={(e) => {
+              const mm = Number(e.target.value) / 10;
+              liftRef.current = mm;
+              setLiftState(mm);
+              api.current?.setLift(mm);
+            }}
+            aria-label="Pen-up height shown (view only)"
+            className="h-1 w-20 cursor-pointer accent-copper"
+          />
+          <span className="w-12 text-right">{lift.toFixed(1)} mm</span>
+        </label>
+
         <button
           onClick={() => setShowTravel((v) => !v)}
           className="tlabel hover:text-copper"
@@ -414,7 +551,10 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
           <span className="inline-block h-0.5 w-4 bg-line-strong" /> {rapids}{" "}
           pen-up
         </span>
-        <span className="text-faint">drag to orbit · scroll to zoom</span>
+        <span className="text-faint">
+          drag to orbit · scroll to zoom · lift is a view setting, not the
+          G-code
+        </span>
       </div>
     </div>
   );
