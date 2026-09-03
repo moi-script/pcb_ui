@@ -124,9 +124,9 @@ def test_an_untraceable_image_is_a_readable_400(client):
 
 def test_retrace_of_a_routed_board_is_refused(client):
     """A KiCad board has no source image, so there is nothing to re-trace."""
-    with open("labExam.kicad_pcb", "rb") as f:
+    with open("tests/single_layer.kicad_pcb", "rb") as f:
         r = client.post("/route",
-                        files={"file": ("labExam.kicad_pcb", f, "text/plain")},
+                        files={"file": ("single_layer.kicad_pcb", f, "text/plain")},
                         data={"email": EMAIL})
     kicad = r.json()
     assert kicad.get("hasSource") is not True
@@ -171,10 +171,10 @@ def test_list_view_of_a_traced_board_is_lean(client, board):
 
 
 def test_list_view_of_a_kicad_board_still_carries_tracks(client):
-    with open("labExam.kicad_pcb", "rb") as f:
+    with open("tests/single_layer.kicad_pcb", "rb") as f:
         b = client.post("/route",
-                        files={"file": ("labExam.kicad_pcb", f, "text/plain")},
+                        files={"file": ("single_layer.kicad_pcb", f, "text/plain")},
                         data={"email": EMAIL}).json()
     rows = client.get(f"/boards/{EMAIL}").json()
     row = next(r for r in rows if r["id"] == b["id"])
-    assert len(row["tracks"]) == 352
+    assert len(row["tracks"]) == 12

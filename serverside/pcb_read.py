@@ -122,6 +122,31 @@ def extract_wiring(text):
     return wiring
 
 
+def layer_usage(wiring):
+    """What copper this board actually routes, per layer, plus its via count.
+
+    Deliberately reads the routed geometry rather than the file's `(layers ...)`
+    stanza. Most 2-layer KiCad templates declare B.Cu whether or not anything
+    is on it, so trusting the declaration would reject boards that are single
+    layer in every way that matters.
+
+    Returns {"tracks": {layer: count}, "vias": int, "layers": [layer, ...]},
+    where `layers` lists only the copper layers carrying at least one track.
+    """
+    counts = {}
+    vias = 0
+    for w in wiring:
+        if w["type"] == "track":
+            counts[w["layer"]] = counts.get(w["layer"], 0) + 1
+        elif w["type"] == "via":
+            vias += 1
+    return {
+        "tracks": counts,
+        "vias": vias,
+        "layers": sorted(layer for layer, n in counts.items() if n),
+    }
+
+
 def read_file(path="newProject.kicad_pcb"):
     """Read a .kicad_pcb from disk and return its wiring data."""
     with open(path, "r", encoding="utf-8") as f:

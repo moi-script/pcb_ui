@@ -43,7 +43,7 @@ from pymongo import ReturnDocument
 
 import db
 from pcb_gcode import CONFIG, generate_gcode, optimize_order, travel_distance
-from pcb_read import extract_wiring
+from pcb_read import extract_wiring, layer_usage
 from tracer import TraceError, TraceParams, trace_image
 from tracer import emit
 
@@ -98,12 +98,47 @@ def _dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
+def reject_if_double_sided(wiring: list) -> None:
+    """Refuse anything a pen plotter cannot draw in one pass.
+
+    The pen reaches one face of the work. A board with copper on both sides
+    cannot be plotted faithfully, and a via exists precisely to cross between
+    layers, so neither can be honoured. Before this check the router silently
+    plotted F.Cu and dropped everything else, which returned a board that
+    looked complete and was missing most of its copper.
+    """
+    usage = layer_usage(wiring)
+    counts, layers, vias = usage["tracks"], usage["layers"], usage["vias"]
+    if len(layers) <= 1 and not vias:
+        return
+
+    def plural(n: int, word: str) -> str:
+        return f"{n} {word}" + ("" if n == 1 else "s")
+
+    per_layer = ", ".join(f"{counts[layer]} on {layer}" for layer in layers)
+    if len(layers) > 1:
+        lead = f"This board is double-sided: {per_layer}"
+        if vias:
+            lead += f", plus {plural(vias, 'via')}"
+    else:
+        lead = (f"This board has {per_layer}, but also {plural(vias, 'via')}, "
+                "which cross between copper layers")
+
+    raise HTTPException(400, (
+        f"{lead}. A pen plotter draws one face of the work, so only "
+        "single-layer boards can be routed. Re-route the board onto one copper "
+        "layer with no vias, then upload it again."
+    ))
+
+
 def build_board(wiring: list, name: str, filename: str) -> dict:
     """Turn raw wiring data into a stored board document: normalized tracks,
     bounds, per-layer counts, G-code, and a route report."""
     tracks = [w for w in wiring if w["type"] == "track"]
     if not tracks:
         raise HTTPException(400, "No copper tracks found in this file.")
+
+    reject_if_double_sided(wiring)
 
     xs = [c for w in tracks for c in (w["start"][0], w["end"][0])]
     ys = [c for w in tracks for c in (w["start"][1], w["end"][1])]
