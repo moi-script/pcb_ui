@@ -42,6 +42,8 @@ from pydantic import BaseModel
 from pymongo import ReturnDocument
 
 import db
+from grbl import ports as grbl_ports
+from machine import SIM_PORT, make_transport, session
 from pcb_gcode import CONFIG, generate_gcode, optimize_order, travel_distance
 from pcb_read import extract_wiring, layer_usage
 from tracer import TraceError, TraceParams, trace_image
@@ -350,6 +352,11 @@ class PrintJob(BaseModel):
     email: str
     board_id: str
     check: bool = False
+
+
+class ConnectRequest(BaseModel):
+    port: str
+    baud: int = 115200
 
 
 # --------------------------------------------------------------- ESP32 bridge
@@ -696,6 +703,69 @@ def delete_board(board_id: str):
             pass
     db.boards.delete_one({"_id": oid})
     return {"ok": True}
+
+
+# ------------------------------------------------------------------- machine
+#
+# The backend runs on the same PC as the browser, so it — not the tab — owns
+# the serial port. Everything here drives the one `machine.session`.
+
+@app.get("/machine/ports")
+def machine_ports():
+    """Serial ports, controller-looking ones first.
+
+    `suggested` is filled only when exactly one candidate is present:
+    guessing between two plausible boards is worse than asking, and picking
+    the wrong one moves a machine.
+    """
+    try:
+        found = grbl_ports.list_ports()
+    except Exception:  # noqa: BLE001 - a broken enumeration is not fatal
+        found = []
+    payload = [
+        {
+            "device": p.device,
+            "description": p.description,
+            "chip": p.chip,
+            "likely_controller": p.likely_controller,
+        }
+        for p in found
+    ]
+    suggested = grbl_ports.autoselect(found)
+
+    if os.environ.get("TRACEWORKS_SIM") == "1":
+        payload.append({
+            "device": SIM_PORT,
+            "description": "Simulator (GRBL 1.1) — no hardware",
+            "chip": None,
+            "likely_controller": False,
+        })
+        if suggested is None:
+            suggested = SIM_PORT
+
+    return {"ports": payload, "suggested": suggested,
+            "bauds": grbl_ports.BAUD_RATES}
+
+
+@app.post("/machine/connect")
+def machine_connect(body: ConnectRequest):
+    try:
+        transport = make_transport(body.port, body.baud)
+    except Exception as exc:  # noqa: BLE001 - pyserial raises many shapes
+        raise HTTPException(502, f"Could not open {body.port}: {exc}") from exc
+    firmware = session.connect(transport, body.port, body.baud)
+    return {"ok": True, "firmware": firmware}
+
+
+@app.post("/machine/disconnect")
+def machine_disconnect():
+    session.disconnect()
+    return {"ok": True}
+
+
+@app.get("/machine/state")
+def machine_state():
+    return session.state.snapshot()
 
 
 if __name__ == "__main__":
