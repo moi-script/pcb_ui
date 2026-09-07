@@ -43,7 +43,9 @@ from pymongo import ReturnDocument
 
 import db
 from grbl import ports as grbl_ports
-from machine import SIM_PORT, make_transport, session
+from grbl.limits import AXIS_INDEX, LimitError
+from grbl.protocol import Realtime, encode_jog, encode_zero
+from machine import SIM_PORT, PositionUncertain, make_transport, session
 from pcb_gcode import CONFIG, generate_gcode, optimize_order, travel_distance
 from pcb_read import extract_wiring, layer_usage
 from tracer import TraceError, TraceParams, trace_image
@@ -357,6 +359,20 @@ class PrintJob(BaseModel):
 class ConnectRequest(BaseModel):
     port: str
     baud: int = 115200
+
+
+class JogRequest(BaseModel):
+    axis: str
+    distance: float
+    feed: float = 1000.0
+
+
+class ZeroRequest(BaseModel):
+    axes: str
+
+
+class CommandRequest(BaseModel):
+    line: str
 
 
 # --------------------------------------------------------------- ESP32 bridge
@@ -766,6 +782,218 @@ def machine_disconnect():
 @app.get("/machine/state")
 def machine_state():
     return session.state.snapshot()
+
+
+@app.post("/machine/jog")
+def machine_jog(body: JogRequest) -> dict:
+    axis, distance, feed = body.axis, body.distance, body.feed
+    streamer = session.require()
+
+    # ONE atomic read of the machine picture, before anything else. Every
+    # input to the safety decision below -- machine state, position, the
+    # status counter, and whether that status report was dispatched with a
+    # quiet streamer -- comes out of this single snapshot. Reading them
+    # separately lets an incoming report land between two of the reads and
+    # pair a NEWER counter with OLDER coordinates, which is exactly the
+    # combination that would wrongly lift a taint and then validate against
+    # a stale position. `snapshot()` copies its lists under
+    # MachineState._lock, so nothing here can be rebound underneath us.
+    #
+    # `streamer.quiet` is read here too, before any leaf lock: the
+    # established order is Streamer._lock -> MachineState._lock -> leaf, and
+    # `_planned_lock` (taken inside settle/reserve_jog) must never be held
+    # while wanting Streamer._lock.
+    quiet = streamer.quiet
+    snap = session.state.snapshot()
+    current_state = snap["state"]
+    if current_state.startswith("Alarm"):
+        # Refuse outright rather than send a jog GRBL will bounce with
+        # error:9 -- and taint: whatever was in flight before the alarm
+        # tripped stopped at an unknown point, so any tracked target (or a
+        # fallback to live mpos, which may also be stale) can no longer be
+        # trusted. This is what closes the C1 hole: no jog issued in Alarm
+        # can ever reach `reserve_jog` and poison the base.
+        session.taint_planned()
+        raise HTTPException(400, "Machine is in Alarm. Unlock ($X) before jogging.")
+
+    # The position from that same snapshot — already a private copy, so no
+    # later report can rebind it underneath the checks below.
+    m = snap["mpos"]
+
+    # If the controller reports Idle, the live position may be
+    # authoritative again: clear a matched planned target, or lift a taint
+    # if (and only if) this report proves the queue drained — see
+    # Session.settle. No dedicated polling loop — this rides along on the
+    # jog route, which is exactly where the decision is needed.
+    session.settle(snap, quiet)
+
+    # Validate and reserve atomically against the end of the last jog we
+    # queued, not the live position: rapid successive jogs (including two
+    # truly concurrent requests racing on FastAPI's threadpool) land here
+    # before the controller has reported back, so live mpos still lags.
+    # `reserve_jog` falls back to live mpos only when nothing is tracked
+    # (or once `settle` has confirmed settling), and refuses outright when
+    # tainted rather than guessing.
+    try:
+        session.reserve_jog(m, axis, distance)
+    except PositionUncertain as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except LimitError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    try:
+        streamer.send_line(encode_jog(axis, distance, feed))
+    except OSError:
+        # We don't know whether the controller ever saw the line. The
+        # reservation `reserve_jog` just made is no longer trustworthy
+        # either way (accepted-but-unconfirmed, or never sent at all), so
+        # poison it rather than leave an unverified target on the books.
+        session.taint_planned()
+        raise HTTPException(
+            502, "Lost connection to the machine while sending the jog."
+        ) from None
+
+    if not streamer.connected:
+        # Streamer.send_line can also fail "successfully": it swallows
+        # OSError internally and just marks the connection dead (see
+        # Streamer._drop) rather than raising. Either way the line's fate
+        # is unknown, so the same poisoning applies.
+        session.taint_planned()
+
+    return {"ok": True}
+
+
+@app.post("/machine/jog/cancel")
+def machine_jog_cancel() -> dict:
+    # Jog cancel decelerates and stops -- the exact stopping point isn't
+    # known synchronously, and live mpos hasn't caught up to it yet either
+    # (same lag `_planned` exists to cover). Taint rather than clear: the
+    # next jog is refused until a confirmed Idle report proves where the
+    # machine actually stopped.
+    streamer = session.require()
+    streamer.send_realtime(Realtime.JOG_CANCEL)
+    session.taint_and_resync(streamer)
+    return {"ok": True}
+
+
+@app.post("/machine/home")
+def machine_home() -> dict:
+    # $H runs a real homing cycle -- motion, not an instant coordinate
+    # change. Taint rather than clear: live mpos still reflects the
+    # pre-home position until the cycle completes and reports Idle, so
+    # clearing to None here would reopen the exact stale-live-mpos hole
+    # this mechanism exists to close, just triggered by home instead of a
+    # jog.
+    streamer = session.require()
+    streamer.send_line("$H")
+    session.taint_and_resync(streamer)
+    return {"ok": True}
+
+
+@app.post("/machine/unlock")
+def machine_unlock() -> dict:
+    # Alarm halts all motion outright -- nothing is left in flight for the
+    # position to be uncertain about, so the live position is trustworthy
+    # the instant the controller leaves Alarm. Round 2 cleared straight to
+    # None here on that reasoning, which was the ONE call site left lifting
+    # a taint with no confirmation and no resync at all -- inconsistent
+    # with every other taint-clearing path in this file, all of which now
+    # require an observed-after-the-fact status report (see
+    # taint_and_resync / settle, N1). Using taint_and_resync costs nothing
+    # here: the machine genuinely is Idle right after $X, so the very next
+    # status report clears it -- but it does so through the same
+    # observed-after-taint mechanism as everywhere else, rather than an
+    # unconditional bare clear.
+    streamer = session.require()
+    streamer.send_line("$X")
+    session.taint_and_resync(streamer)
+    return {"ok": True}
+
+
+@app.post("/machine/zero")
+def machine_zero(body: ZeroRequest) -> dict:
+    axes = body.axes
+    streamer = session.require()
+    axes = axes.upper()
+    if not axes or any(a not in AXIS_INDEX for a in axes):
+        raise HTTPException(400, f"axes must be made up of X, Y, Z — got {axes!r}")
+    streamer.send_line(encode_zero(axes))
+    # G10 L20 itself doesn't move the machine, but this route can't prove a
+    # jog isn't still draining through the queue underneath it (the ZERO
+    # buttons sit in the same jog panel and are clickable mid-jog). Taint
+    # unconditionally rather than try to detect in-flight motion -- that
+    # detection is exactly what would need the same live-mpos fallback this
+    # mechanism exists to distrust.
+    session.taint_and_resync(streamer)
+    return {"ok": True}
+
+
+_REALTIME_CHARS: dict[str, bytes] = {
+    "?": Realtime.STATUS,
+    "!": Realtime.FEED_HOLD,
+    "~": Realtime.RESUME,
+    "\x18": Realtime.SOFT_RESET,
+}
+
+
+@app.post("/machine/command")
+def machine_command(body: CommandRequest) -> dict:
+    line = body.line
+    streamer = session.require()
+    text = line.strip()
+    if not text:
+        raise HTTPException(400, "empty command")
+    if "\n" in text or "\r" in text:
+        raise HTTPException(400, "one command per line")
+    if len(text) == 1 and text in _REALTIME_CHARS:
+        # A single realtime character (?, !, ~, ^X) must never go through
+        # send_line: it would be charged against the RX buffer and never
+        # acknowledged, permanently shrinking the flow-control budget for
+        # the rest of the session. Route it through the realtime channel
+        # instead — this also makes it useful (an operator can type ? for
+        # a status poll or ! to feed-hold from the console input).
+        streamer.send_realtime(_REALTIME_CHARS[text])
+        # ^X (soft reset) in particular can interrupt motion; the others
+        # don't move the machine on their own, but tainting unconditionally
+        # here costs nothing and stays on the safe side.
+        session.taint_and_resync(streamer)
+        return {"ok": True}
+    streamer.send_line(text)
+    # A raw console command can itself be a motion line (or $H, or M3/M5
+    # spindle control -- the PEN UP/DOWN buttons go through this exact
+    # route -- or anything else that moves the machine or redefines its
+    # origin) that this route has no way to parse and fold into `_planned`.
+    # Falling back to live mpos here (the old `clear_planned()` behavior)
+    # is exactly the C2 hole: mpos hasn't caught up to whatever this line
+    # just started, so a subsequent jog checked against it could pass when
+    # it should not. Taint instead: refuse the next jog until a confirmed
+    # Idle report proves the position again.
+    session.taint_and_resync(streamer)
+    return {"ok": True}
+
+
+@app.post("/machine/estop")
+def machine_estop() -> dict:
+    """Soft reset, immediately. No feed hold, no queue, no confirmation."""
+    streamer = session.streamer
+    if streamer is None:
+        raise HTTPException(409, "Machine is not connected.")
+    streamer.send_realtime(Realtime.SOFT_RESET)
+    # Taint, do NOT clear. A soft reset aborts motion mid-move: the machine
+    # decelerates (or is cut) at a point nobody knows, and live mpos has
+    # certainly not caught up to it -- so "trust live mpos", which is what
+    # clear_planned() means, is the stale-low fallback this whole mechanism
+    # exists to distrust. Round 3 argued it was moot because the jog route's
+    # Alarm gate refuses afterwards anyway; that leans on the controller
+    # actually reaching (and reporting) Alarm, which is a second mechanism's
+    # behaviour, not this one's. Tainting is correct on its own terms.
+    #
+    # Deliberately NOT taint_and_resync: e-stop must return instantly and
+    # must never wait on the link. The taint lifts through the ordinary
+    # settle() path once a status report proves the machine is Idle with
+    # nothing of ours outstanding.
+    session.taint_planned()
+    return {"ok": True}
 
 
 if __name__ == "__main__":

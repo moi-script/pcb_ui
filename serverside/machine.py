@@ -23,6 +23,61 @@ BANNER_TIMEOUT = 3.0
 SIM_PORT = "SIM"
 
 
+def _sim_transport() -> Transport:
+    """The simulator, wired to a real clock and safe to share across threads.
+
+    `GrblSim` models motion but has no clock of its own — slice-1 ticked it
+    from a loop in its `serve_sim` launcher. Here the transport ticks itself,
+    because nothing else in the request path is in a position to: the
+    streamer thread pumps on a 5 Hz status poll, and a machine that only
+    advanced when someone asked for its position would report motion in
+    200 ms lurches.
+
+    The lock is the other half of that: `tick` mutates the same queue and
+    output buffer that `write`/`read_available` touch from the streamer
+    thread, and `GrblSim` itself is single-threaded by design.
+    """
+    from grbl.sim import GrblSim
+
+    class SimTransport(GrblSim):
+        TICK = 0.01
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._lock = threading.RLock()
+            self._stop = threading.Event()
+            self._clock = threading.Thread(
+                target=self._run_clock, name="grbl-sim-clock", daemon=True
+            )
+            self._clock.start()
+
+        def _run_clock(self) -> None:
+            last = time.monotonic()
+            while not self._stop.is_set():
+                now = time.monotonic()
+                with self._lock:
+                    if self._closed:
+                        return
+                    self.tick(now - last)
+                last = now
+                time.sleep(self.TICK)
+
+        def write(self, data: bytes) -> None:
+            with self._lock:
+                super().write(data)
+
+        def read_available(self) -> bytes:
+            with self._lock:
+                return super().read_available()
+
+        def close(self) -> None:
+            self._stop.set()
+            with self._lock:
+                super().close()
+
+    return SimTransport()
+
+
 def make_transport(port: str, baud: int) -> Transport:
     """The transport for a port name. `SIM` is the simulator, not a device.
 
@@ -33,9 +88,7 @@ def make_transport(port: str, baud: int) -> Transport:
     the configuration that ships.
     """
     if port == SIM_PORT:
-        from grbl.sim import GrblSim
-
-        return GrblSim()
+        return _sim_transport()
     return SerialTransport(port, baud)
 
 
