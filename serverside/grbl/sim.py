@@ -39,6 +39,22 @@ AXES = ("X", "Y", "Z")
 SUPPORTED_WORDS = set("GMNXYZIJKRFSTPL")
 
 
+class _Ack:
+    """One reply owed to the host, in the order the line was parsed.
+
+    GRBL answers strictly in parse order and its serial output is FIFO, so a
+    reply that is ready before an earlier one still has to wait its turn.
+    `ready` is False only for a line the planner could not take yet.
+    """
+
+    __slots__ = ("text", "cost", "ready")
+
+    def __init__(self, text: str, cost: int, ready: bool) -> None:
+        self.text = text
+        self.cost = cost
+        self.ready = ready
+
+
 class _Block:
     """One queued motion block."""
 
@@ -46,7 +62,7 @@ class _Block:
         self.target = target
         self.feed = feed
         self.rx_cost = rx_cost
-        self.acked = False
+        self.ack: _Ack | None = None
 
 
 class GrblSim:
@@ -72,6 +88,12 @@ class GrblSim:
         self._out: list[str] = []
         self._partial = ""
         self._queue: list[_Block] = []
+        # Replies owed to the host, in parse order. Nothing is emitted (and
+        # nothing is credited back against the RX buffer) until every earlier
+        # line has been answered: the host counts bytes off its own FIFO, so
+        # an out-of-order `ok` credits the wrong line's cost and the drift
+        # compounds until it oversends a buffer it believes has room.
+        self._acks: list[_Ack] = []
         self._rx_used = 0
         self.peak_rx_used = 0
         self._lines_seen = 0
@@ -128,11 +150,11 @@ class GrblSim:
         elif ch == b"\x85":
             if self.state == "Jog":
                 self._queue.clear()
-                self._rx_used = 0
+                self._reset_acks()
                 self.state = "Idle"
         elif ch == b"\x18":
             self._queue.clear()
-            self._rx_used = 0
+            self._reset_acks()
             self.state = "Alarm"
             self._emit("")
             self._emit(BANNER)
@@ -302,35 +324,46 @@ class GrblSim:
         for i, axis_travel in enumerate(self.travel):
             if target[i] < -1e-6 or target[i] > axis_travel + 1e-6:
                 self._queue.clear()
-                self._rx_used = 0
+                self._reset_acks()
                 self.state = "Alarm"
                 self._emit("ALARM:2")
                 return
 
-        # Real GRBL acknowledges strictly in the order it parses, because a
-        # full planner stops it parsing at all — the next line simply sits in
-        # the RX buffer. Once ANY block here is un-acknowledged, every later
-        # one must be too: acknowledging a later line first would credit the
-        # host's FIFO byte accounting with the wrong line's cost, and the
-        # drift compounds until the host oversends a buffer it believes has
-        # room. (Found by test_the_rx_budget_is_never_oversent.)
-        withheld = any(not b.acked for b in self._queue)
-        if withheld or len(self._queue) >= self.planner_blocks:
-            # The line stays in the RX buffer, un-acknowledged. This is the
-            # backpressure the host's flow control must respect.
-            self._queue.append(_Block(target, self.feed or 1000.0, cost))
-            self.state = "Jog" if jog else "Run"
-            return
-
         block = _Block(target, self.feed or 1000.0, cost)
-        block.acked = True
-        self._queue.append(block)
-        self.state = "Jog" if jog else "Run"
-        self._reply("ok", cost)
+        if len(self._queue) >= self.planner_blocks:
+            # Planner full: the line stays in the RX buffer, un-acknowledged,
+            # and so does every line parsed after it. This is the backpressure
+            # the host's flow control must respect.
+            block.ack = self._withhold(cost)
+            self._queue.append(block)
+        else:
+            self._queue.append(block)
+            self._reply("ok", cost)
+        # A feed hold is not lifted by handing the controller more work.
+        if self.state != "Hold":
+            self.state = "Jog" if jog else "Run"
 
     def _reply(self, text: str, cost: int) -> None:
-        self._rx_used = max(0, self._rx_used - cost)
-        self._emit(text)
+        """Answer a line — once every line parsed before it has been answered."""
+        self._acks.append(_Ack(text, cost, True))
+        self._flush_acks()
+
+    def _withhold(self, cost: int) -> _Ack:
+        """Take a line the planner cannot accept yet. Answered when it runs."""
+        ack = _Ack("ok", cost, False)
+        self._acks.append(ack)
+        return ack
+
+    def _flush_acks(self) -> None:
+        while self._acks and self._acks[0].ready:
+            ack = self._acks.pop(0)
+            self._rx_used = max(0, self._rx_used - ack.cost)
+            self._emit(ack.text)
+
+    def _reset_acks(self) -> None:
+        """A reset or an alarm discards everything the controller was holding."""
+        self._acks.clear()
+        self._rx_used = 0
 
     def tick(self, dt: float) -> None:
         """Advance simulated motion by dt seconds."""
@@ -363,7 +396,9 @@ class GrblSim:
 
     def _finish_block(self) -> None:
         done = self._queue.pop(0)
-        # A block that was held back by a full planner gets its `ok` now.
-        if not done.acked:
-            self._reply("ok", done.rx_cost)
-            done.acked = True
+        # A block that was held back by a full planner gets its `ok` now —
+        # through the ordered queue, so it still cannot overtake an earlier
+        # line's reply.
+        if done.ack is not None and not done.ack.ready:
+            done.ack.ready = True
+            self._flush_acks()

@@ -99,22 +99,31 @@ class Job:
             self._feed()
 
     def stop(self) -> None:
-        """Hold, then abandon the rest of the file.
+        """Hold, drop the rest of the file, then let the controller drain.
 
-        A soft reset would be faster but costs the operator their work zero,
-        which they set by hand and would have to set again. Holding and
-        dropping the remaining lines leaves the machine parked and zeroed;
-        the queued moves already in the controller still play out, which is
-        why this is 'stop', not 'e-stop'. E-stop is its own endpoint.
+        A soft reset would end motion outright, but it costs the operator
+        their work zero — set by hand, and gone for the rest of the session.
+        So this stops the only way that keeps it:
+
+        1. drop every line not yet written, or the rest of the file carries
+           on streaming to a machine that was just told to stop;
+        2. feed-hold, which decelerates the machine immediately;
+        3. release the hold, so the moves already inside the controller —
+           at most a planner's worth, a second or so of drawing — run out
+           and the machine returns to Idle.
+
+        Step 3 is not optional. Leaving the controller held would freeze it
+        with a queue it can never finish, and the next job would feed into a
+        machine that never moves. Those last queued moves are the price of
+        keeping work zero; e-stop is the control that refuses to pay it.
         """
         with self._lock:
             if self.state in ("done", "error", "stopped"):
                 return
             self.state = "stopped"
-        # Drop what has not gone out yet, or the rest of the file keeps
-        # streaming to a machine the operator just told to stop.
         self.streamer.clear_outbox()
         self.streamer.send_realtime(Realtime.FEED_HOLD)
+        self.streamer.send_realtime(Realtime.RESUME)
         with self._lock:
             self._end_check_mode()
 

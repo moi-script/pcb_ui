@@ -9,6 +9,7 @@ import InlineEdit from "@/components/InlineEdit";
 import RetracePanel from "@/components/RetracePanel";
 import { useAuth } from "@/lib/auth";
 import { api, type Board } from "@/lib/api";
+import { useMachine } from "@/lib/machine";
 
 // Three.js is ~600 KB and needs a DOM, so it loads on this page only, client-side.
 const GcodeVisualizer = dynamic(() => import("@/components/GcodeVisualizer"), {
@@ -78,7 +79,6 @@ export default function ProjectDetail() {
   // A traced image is one layer with one synthetic net, so the copper-layer
   // controls and counts would all be dead weight on it.
   const traced = board.source === "image";
-  const deviceAlias = session?.device?.alias ?? "your machine";
 
   async function removeBoard() {
     if (!board) return;
@@ -124,9 +124,7 @@ export default function ProjectDetail() {
           <p className="font-mono text-xs text-faint">{board.filename}</p>
         </div>
         <div className="flex items-center gap-4">
-          <span className="font-mono text-xs text-muted">
-            target · {deviceAlias}
-          </span>
+          <MachineTag />
           {armed ? (
             <span className="flex items-center gap-2 font-mono text-xs">
               <button
@@ -310,9 +308,8 @@ export default function ProjectDetail() {
 
           <PlotControl
             boardId={board.id}
-            email={session?.email}
+            boardName={board.name}
             gcodeLines={board.gcodeLines}
-            deviceAlias={deviceAlias}
           />
         </section>
       </div>
@@ -326,7 +323,7 @@ export default function ProjectDetail() {
               what the machine will actually run
             </span>
           </div>
-          <GcodeVisualizer gcode={board.gcode} />
+          <LiveVisualizer gcode={board.gcode} boardName={board.name} />
         </section>
       )}
 
@@ -350,199 +347,251 @@ export default function ProjectDetail() {
 
 /* --------------------------------------------------------------- controls */
 
+/** The machine this board would go to, in the page header. */
+function MachineTag() {
+  const { snap, connected } = useMachine();
+  return (
+    <span className="font-mono text-xs text-muted">
+      target{" "}
+      {connected ? (
+        <span className="text-ink">{snap?.conn.port}</span>
+      ) : (
+        <Link href="/connect" className="text-copper hover:underline">
+          no machine
+        </Link>
+      )}
+    </span>
+  );
+}
+
+/**
+ * The toolpath view, wired to the running job.
+ *
+ * liveIndex and penPos are handed over only while THIS board's job is
+ * running. A job for a different board would otherwise draw its progress
+ * onto this one's toolpath.
+ */
+function LiveVisualizer({
+  gcode,
+  boardName,
+}: {
+  gcode: string;
+  boardName: string;
+}) {
+  const { snap } = useMachine();
+  const job = snap?.job ?? null;
+  const active = job?.state === "running" || job?.state === "paused";
+  const mine = active && job?.name === boardName;
+
+  return (
+    <GcodeVisualizer
+      gcode={gcode}
+      liveIndex={mine && job ? job.acked : null}
+      penPos={mine && snap ? snap.wpos : null}
+    />
+  );
+}
+
 function PlotControl({
   boardId,
-  email,
+  boardName,
   gcodeLines,
-  deviceAlias,
 }: {
   boardId: string;
-  email?: string;
+  boardName: string;
   gcodeLines: number;
-  deviceAlias: string;
 }) {
-  // idle -> starting -> checking -> check-done -> printing -> done
-  //                       \-> error   (any request/stream failure)
-  type Phase =
-    | "idle"
-    | "starting"
-    | "checking"
-    | "check-done"
-    | "printing"
-    | "done"
-    | "error";
-  const [phase, setPhase] = useState<Phase>("idle");
+  const { snap, connected, live } = useMachine();
   const [check, setCheck] = useState(true);
-  const [line, setLine] = useState(0);
-  const [total, setTotal] = useState(gcodeLines);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(
-    () => () => {
-      if (timer.current) clearInterval(timer.current);
-    },
-    []
-  );
+  // Job state comes from the machine, not from local state. A job started in
+  // another tab, or before this page was opened, is still this machine's
+  // job, and two tabs tracking it separately would disagree about whether
+  // the machine is busy.
+  const job = snap?.job ?? null;
+  const running = job?.state === "running";
+  const paused = job?.state === "paused";
+  const active = running || paused;
+  const mine = job?.name === boardName;
+  const reportable = Boolean(job && mine && job.state !== "idle");
 
-  async function startJob(checkFlag: boolean) {
-    if (!email) {
-      setErr("No paired device on this account.");
-      setPhase("error");
-      return;
-    }
+  const total = job?.total || gcodeLines;
+  const acked = job?.acked ?? 0;
+  const pct = total ? Math.round((acked / total) * 100) : 0;
+
+  async function guard(fn: () => Promise<unknown>) {
     setErr("");
-    setLine(0);
-    setPhase("starting");
+    setBusy(true);
     try {
-      const r = await api.startPrint(email, boardId, checkFlag);
-      setTotal(r.total || gcodeLines);
-      setPhase(checkFlag ? "checking" : "printing");
+      await fn();
     } catch (e) {
       setErr((e as Error).message);
-      setPhase("error");
+    } finally {
+      setBusy(false);
     }
   }
 
-  async function stop() {
-    if (timer.current) clearInterval(timer.current);
-    if (email) {
-      try {
-        await api.stopPrint(email);
-      } catch {
-        /* ignore — we're stopping anyway */
-      }
-    }
-    setPhase("idle");
-    setLine(0);
+  if (!connected) {
+    return (
+      <div className="panel ticked p-5">
+        <span className="tlabel">Plot this board</span>
+        <p className="mt-3 text-sm text-muted">
+          {live
+            ? "No machine connected. Plug the controller into this PC over USB and pick its port."
+            : "Not talking to the server. Is the API running on port 8000?"}
+        </p>
+        <Link href="/connect" className="btn btn-copper mt-4 w-full">
+          Connect a machine
+        </Link>
+      </div>
+    );
   }
-
-  // Poll the machine while a job runs; drive the bar from real status.
-  useEffect(() => {
-    if ((phase !== "checking" && phase !== "printing") || !email) return;
-    const id = setInterval(async () => {
-      try {
-        const s = await api.printStatus(email);
-        setLine(s.line);
-        setTotal(s.total || gcodeLines);
-        if (s.state === "error") {
-          setErr(s.error || "The plotter reported an error.");
-          setPhase("error");
-        } else if (s.state === "done") {
-          setPhase(phase === "checking" ? "check-done" : "done");
-        } else if (s.state === "stopped" || s.state === "idle") {
-          setPhase("idle");
-        }
-      } catch (e) {
-        setErr((e as Error).message);
-        setPhase("error");
-      }
-    }, 500);
-    timer.current = id;
-    return () => clearInterval(id);
-  }, [phase, email, gcodeLines]);
-
-  const denom = total || gcodeLines;
-  const pct = denom ? Math.round((line / denom) * 100) : 0;
-  const active = phase === "checking" || phase === "printing";
-  const showBar =
-    active || phase === "done" || phase === "check-done" || phase === "starting";
 
   return (
     <div className="panel ticked p-5">
       <div className="flex items-center justify-between">
-        <span className="tlabel">Stream to device</span>
-        <span className="font-mono text-xs text-muted">{deviceAlias}</span>
+        <span className="tlabel">Plot this board</span>
+        <span className="font-mono text-xs text-muted">
+          {snap?.conn.port} · {snap?.state}
+        </span>
       </div>
 
-      <button
-        onClick={() => setCheck((v) => !v)}
-        disabled={active || phase === "starting"}
-        className="mt-4 flex w-full items-center justify-between rounded border border-line bg-panel-2 px-3 py-2.5 text-left disabled:opacity-50"
-      >
-        <span>
-          <span className="block text-sm text-ink">Dry-check first</span>
-          <span className="font-mono text-[0.7rem] text-muted">
-            reads every line, nothing moves ($C)
-          </span>
-        </span>
-        <span
-          className={`relative h-5 w-9 flex-none rounded-full transition-colors ${
-            check ? "bg-signal" : "bg-line-strong"
-          }`}
+      {!active && (
+        <button
+          onClick={() => setCheck((v) => !v)}
+          disabled={busy}
+          className="mt-4 flex w-full items-center justify-between rounded border border-line bg-panel-2 px-3 py-2.5 text-left disabled:opacity-50"
         >
+          <span>
+            <span className="block text-sm text-ink">Dry-check first</span>
+            <span className="font-mono text-[0.7rem] text-muted">
+              reads every line, nothing moves ($C)
+            </span>
+          </span>
           <span
-            className={`absolute top-0.5 h-4 w-4 rounded-full bg-panel-2 transition-all ${
-              check ? "left-4" : "left-0.5"
+            className={`relative h-5 w-9 flex-none rounded-full transition-colors ${
+              check ? "bg-signal" : "bg-line-strong"
             }`}
-          />
-        </span>
-      </button>
+          >
+            <span
+              className={`absolute top-0.5 h-4 w-4 rounded-full bg-panel-2 transition-all ${
+                check ? "left-4" : "left-0.5"
+              }`}
+            />
+          </span>
+        </button>
+      )}
 
-      {showBar && (
+      {reportable && job && (
         <div className="mt-4">
           <div className="flex items-center justify-between font-mono text-xs">
             <span className="text-muted">
-              {phase === "starting"
-                ? "sending to device…"
-                : phase === "checking"
-                ? "checking ($C)"
-                : phase === "printing"
-                ? "streaming"
-                : phase === "check-done"
-                ? "check passed · 0 errors"
-                : "complete"}
+              {running
+                ? job.check
+                  ? "checking ($C)"
+                  : "lines sent"
+                : paused
+                ? "paused"
+                : job.state === "done"
+                ? job.check
+                  ? "check passed · 0 errors"
+                  : "finished"
+                : job.state === "stopped"
+                ? "stopped"
+                : "failed"}
             </span>
             <span className="text-ink">
-              {line}/{denom} · {phase === "done" ? 100 : pct}%
+              {acked}/{total} · {pct}%
             </span>
           </div>
           <div className="mt-2 h-2 w-full overflow-hidden rounded-sm bg-well">
             <div
               className={`h-full transition-all duration-100 ${
-                phase === "checking" ? "bg-warn" : "bg-signal"
+                job.state === "error"
+                  ? "bg-danger"
+                  : job.check
+                  ? "bg-warn"
+                  : "bg-signal"
               }`}
-              style={{ width: `${phase === "done" ? 100 : pct}%` }}
+              style={{ width: `${pct}%` }}
             />
           </div>
+          {/* "Sent", not "complete". GRBL acknowledges a line when it has
+              parsed and queued it, so the pen is still behind this number:
+              a bar claiming completion would finish before the machine did. */}
+          <p className="mt-1.5 font-mono text-[0.7rem] text-faint">
+            lines the controller has accepted; the pen is a little behind
+          </p>
         </div>
       )}
 
       <div className="mt-4">
-        {phase === "idle" || phase === "done" || phase === "error" ? (
-          <button
-            onClick={() => startJob(check)}
-            className="btn btn-copper w-full"
-          >
-            {check ? "Validate & plot" : "Plot now"}
-          </button>
-        ) : phase === "check-done" ? (
-          <button
-            onClick={() => startJob(false)}
-            className="btn btn-primary w-full"
-          >
-            Looks good, stream for real →
-          </button>
-        ) : phase === "starting" ? (
-          <button disabled className="btn btn-copper w-full opacity-60">
-            Sending…
-          </button>
+        {running ? (
+          <div className="flex gap-1.5">
+            <button
+              className="btn btn-ghost flex-1"
+              disabled={busy}
+              onClick={() => guard(() => api.pauseJob())}
+            >
+              Pause
+            </button>
+            <button
+              className="btn btn-ghost flex-1 !border-danger !text-danger"
+              disabled={busy}
+              onClick={() => guard(() => api.stopJob())}
+            >
+              Stop
+            </button>
+          </div>
+        ) : paused ? (
+          <div className="flex gap-1.5">
+            <button
+              className="btn btn-copper flex-1"
+              disabled={busy}
+              onClick={() => guard(() => api.resumeJob())}
+            >
+              Resume
+            </button>
+            <button
+              className="btn btn-ghost flex-1 !border-danger !text-danger"
+              disabled={busy}
+              onClick={() => guard(() => api.stopJob())}
+            >
+              Stop
+            </button>
+          </div>
         ) : (
           <button
-            onClick={stop}
-            className="btn btn-ghost w-full !border-danger !text-danger"
+            onClick={() => guard(() => api.run(boardId, check))}
+            disabled={busy}
+            className="btn btn-copper w-full"
           >
-            Stop
+            {busy
+              ? "sending…"
+              : check
+              ? "Validate & plot"
+              : reportable
+              ? "Plot again"
+              : "Plot now"}
           </button>
         )}
-        {phase === "done" && (
+
+        {reportable && job && job.state === "done" && (
           <p className="mt-3 text-center text-sm text-signal">
-            ✓ Sent {denom} lines · 0 errors
+            {job.check ? "Checked" : "Sent"} {job.total} lines · 0 errors
           </p>
         )}
-        {phase === "error" && (
-          <p className="mt-3 text-center text-sm text-danger">{err}</p>
+        {reportable && job && job.state === "stopped" && (
+          <p className="mt-3 text-center text-sm text-muted">
+            Stopped at line {job.acked} of {job.total}.
+          </p>
         )}
+        {reportable && job && job.state === "error" && (
+          <p className="mt-3 text-sm text-danger">{job.error}</p>
+        )}
+        {err && <p className="mt-3 text-sm text-danger">{err}</p>}
       </div>
     </div>
   );

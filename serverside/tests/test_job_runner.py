@@ -196,3 +196,30 @@ def test_a_disconnect_mid_job_fails_the_job_visibly(rig):
     snap = run_to_completion(job, streamer, sim)
     assert snap["state"] == "error"
     assert "cable pulled" in snap["error"]
+
+
+def test_a_stopped_job_leaves_the_machine_able_to_run_the_next_one(rig):
+    """Stop feed-holds to halt promptly, then releases.
+
+    A controller left held has a queue it can never finish, and the next job
+    feeds into a machine that never moves — which looks exactly like a dead
+    machine, from a button labelled Stop.
+    """
+    sim, streamer = rig
+    lines = [f"G1 X{(i % 40) + 1} F1200" for i in range(200)]
+
+    first = Job(lines, streamer, name="one")
+    streamer.on_event = first.on_streamer_event
+    first.start()
+    step(sim, streamer, 10)
+    first.stop()
+    step(sim, streamer, 400)
+
+    assert sim.state != "Hold", "stop left the controller feed-held"
+
+    second = Job(lines[:20], streamer, name="two")
+    streamer.on_event = second.on_streamer_event
+    second.start()
+    snap = run_to_completion(second, streamer, sim)
+    assert snap["state"] == "done"
+    assert snap["acked"] == 20
