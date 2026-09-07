@@ -25,18 +25,21 @@ Trace modes: centerline (down the middle of each stroke), outline (around each
 shape), fill (outline plus hatching — the one that actually covers copper for
 etch resist).
 """
+import asyncio
 import hashlib
 import json
 import math
 import os
 import secrets
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (FastAPI, File, Form, HTTPException, UploadFile,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pymongo import ReturnDocument
@@ -1050,6 +1053,82 @@ def machine_resume():
 def machine_stop():
     session.require_job().stop()
     return {"ok": True}
+
+
+# --------------------------------------------------------- live machine state
+
+@app.websocket("/machine/ws")
+async def ws_endpoint(websocket: WebSocket) -> None:
+    await websocket.accept()
+
+    # `state` tracks the MachineState object this loop is currently reading.
+    # Session.connect() rebinds session.state to a brand-new MachineState on
+    # every reconnect, which restarts both `seq` and console seq numbering at
+    # 0. A seq-based "did it go backwards" check is a proxy for that with a
+    # hole: a short-lived prior connection can leave the cursor small (a
+    # failed connect logs only "disconnected", seq 0 or 1), and the new
+    # state can log its banner/$I/$$/status events and race past that small
+    # cursor before the next 100 ms tick — so `head_seq > last_console_seq`
+    # never goes backwards and the reset never fires, silently dropping the
+    # new session's opening lines. Tracking object identity has no such gap,
+    # and reading `state` once up front (rather than re-reading
+    # `session.state` between the head-seq and tail calls) also closes the
+    # double-dereference race where a reconnect could land between the two.
+    state = session.state
+    snap = state.snapshot()
+    await websocket.send_json({"type": "snapshot", "data": snap})
+    last_seq = snap["seq"]
+
+    backlog = state.console_tail()
+    await websocket.send_json({"type": "console", "data": backlog})
+    last_console_seq = backlog[-1]["seq"] if backlog else -1
+
+    last_keepalive = time.time()
+
+    try:
+        while True:
+            await asyncio.sleep(0.1)  # 10 Hz cap
+
+            if session.state is not state:
+                # A reconnect (or disconnect) swapped in a new MachineState.
+                # Resync to it and resend everything from scratch — the old
+                # cursor and seq numbers no longer mean anything.
+                state = session.state
+                snap = state.snapshot()
+                await websocket.send_json({"type": "snapshot", "data": snap})
+                last_seq = snap["seq"]
+                last_keepalive = time.time()
+
+                backlog = state.console_tail()
+                await websocket.send_json({"type": "console", "data": backlog})
+                last_console_seq = backlog[-1]["seq"] if backlog else -1
+                continue
+
+            now = time.time()
+            # `dirty` is a single shared flag on MachineState: any other
+            # consumer (a second /machine/ws client, or a GET /machine/state poll, which
+            # also calls snapshot() and clears it) steals the change
+            # notification, so this loop would fall back to the 1 Hz
+            # keepalive and feel laggy for no visible reason. `seq` is not
+            # shared state — it is a per-consumer comparison against the
+            # payload just taken — so use that instead.
+            snap = state.snapshot()
+            if snap["seq"] != last_seq or now - last_keepalive >= 1.0:
+                await websocket.send_json({"type": "snapshot", "data": snap})
+                last_seq = snap["seq"]
+                last_keepalive = now
+
+            head_seq = state.console_head_seq()
+            if head_seq > last_console_seq:
+                tail = state.console_tail()
+                fresh = [line for line in tail if line["seq"] > last_console_seq]
+                if fresh:
+                    await websocket.send_json({"type": "console", "data": fresh})
+                    last_console_seq = fresh[-1]["seq"]
+                else:
+                    last_console_seq = head_seq
+    except WebSocketDisconnect:
+        return
 
 
 if __name__ == "__main__":
