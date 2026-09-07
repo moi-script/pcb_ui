@@ -1,8 +1,12 @@
 """TraceWorks API — the server side of the web UI.
 
-Wraps the KiCad -> G-code pipeline in an HTTP API and stores accounts, paired
-devices, and routed boards in MongoDB. The Next.js frontend (pcb_ui) talks to
-this over HTTP.
+Wraps the KiCad -> G-code pipeline in an HTTP API and stores accounts, routed
+boards, and the last serial port used in MongoDB. The Next.js frontend
+(userpage) talks to this over HTTP.
+
+The machine itself hangs off a USB cable on this PC: the backend owns the
+serial port and the /machine/* routes drive it. A browser tab cannot open a
+COM port; localhost:8000 can.
 
 Run it:
     uvicorn server:app --reload --port 8000
@@ -11,15 +15,22 @@ Endpoints:
     GET  /                     health + db status
     POST /auth/signup          {name,email,password} -> user
     POST /auth/login           {email,password}      -> user
-    GET  /devices/{email}      -> device | null
-    POST /devices/pair         {email, device_id}    -> device
-    POST /devices/unpair       {email}
     POST /route                (multipart: file, email) -> routed board
     POST /trace                (multipart: file, email, size_mm, mode, preset) -> traced board
     POST /board/{id}/retrace   {size_mm, mode, preset, ...} -> re-traced board
     GET  /boards/{email}       -> [board summary]
     GET  /board/{id}           -> board (with geometry + gcode)
     DELETE /board/{id}
+
+    GET  /machine/ports        -> serial ports, chip names, a suggestion
+    POST /machine/connect      {port, baud, email?}  -> firmware banner
+    POST /machine/disconnect
+    GET  /machine/state        -> the machine snapshot
+    GET  /machine/last         ?email= -> {port, baud} | null
+    WS   /machine/ws           -> snapshots, console lines, job progress
+    POST /machine/jog | jog/cancel | home | unlock | zero | command | estop
+    POST /machine/run          {board_id, check} -> stream a board's G-code
+    POST /machine/pause | resume | stop
 
 Trace modes: centerline (down the middle of each stroke), outline (around each
 shape), fill (outline plus hatching — the one that actually covers copper for
@@ -32,8 +43,6 @@ import math
 import os
 import secrets
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -81,24 +90,6 @@ def verify_password(password: str, stored: str) -> bool:
         return False
     h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100_000)
     return secrets.compare_digest(h.hex(), digest)
-
-
-# -------------------------------------------------------- default device spec
-def default_device(device_id: str) -> dict:
-    """Sensible profile stored when a machine is first paired."""
-    return {
-        "device_id": device_id,
-        "alias": "Bench Plotter 01",
-        "firmware": "FluidNC 3.9.7",
-        "controller": "MKS DLC32 · ESP32",
-        "connection": "WiFi",
-        "port": "192.168.1.42",
-        "bed": "300 × 300",
-        "penUpZ": 0.5,
-        "penDownZ": -0.5,
-        "travelFeed": 3000,
-        "drawFeed": 800,
-    }
 
 
 # ------------------------------------------------------------- board building
@@ -273,12 +264,6 @@ def out_user(doc: dict) -> dict:
     return {"name": doc["name"], "email": doc["email"]}
 
 
-def out_device(doc: dict) -> dict:
-    d = {k: v for k, v in doc.items() if k not in ("_id", "user_email")}
-    d["id"] = doc["device_id"]
-    return d
-
-
 def out_board(doc: dict, full: bool = False) -> dict:
     d = {
         "id": str(doc["_id"]),
@@ -337,11 +322,6 @@ class LogIn(BaseModel):
     password: str
 
 
-class Pair(BaseModel):
-    email: str
-    device_id: str
-
-
 class Email(BaseModel):
     email: str
 
@@ -350,19 +330,10 @@ class RenameBoard(BaseModel):
     name: str
 
 
-class RenameDevice(BaseModel):
-    alias: str
-
-
-class PrintJob(BaseModel):
-    email: str
-    board_id: str
-    check: bool = False
-
-
 class ConnectRequest(BaseModel):
     port: str
     baud: int = 115200
+    email: str | None = None
 
 
 class JogRequest(BaseModel):
@@ -382,51 +353,6 @@ class CommandRequest(BaseModel):
 class RunRequest(BaseModel):
     board_id: str
     check: bool = False
-
-
-# --------------------------------------------------------------- ESP32 bridge
-ESP_TIMEOUT = 4  # seconds; a dead bridge should fail fast
-
-
-def esp_base(device: dict) -> str:
-    """Base URL of the ESP32 bridge for a device. ESP_BASE_URL overrides it
-    (handy for the esp_mock.py bench test); otherwise use the paired device's
-    network address stored in its `port` field."""
-    override = os.environ.get("ESP_BASE_URL")
-    if override:
-        return override.rstrip("/")
-    ip = device.get("port")
-    if not ip:
-        raise HTTPException(400, "Paired device has no network address.")
-    return f"http://{ip}"
-
-
-def esp_request(url: str, method: str = "GET", data: bytes = None,
-                headers: dict = None):
-    """Call the ESP32 bridge; return (status, parsed_json). Raises 502 if the
-    bridge is unreachable."""
-    req = urllib.request.Request(
-        url, data=data, method=method, headers=headers or {})
-    try:
-        with urllib.request.urlopen(req, timeout=ESP_TIMEOUT) as r:
-            body = r.read().decode("utf-8", "replace")
-            return r.status, (json.loads(body) if body.strip() else {})
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")
-        try:
-            payload = json.loads(body)
-        except ValueError:
-            payload = {"error": body or f"HTTP {e.code}"}
-        return e.code, payload
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise HTTPException(502, f"Can't reach the plotter bridge: {e}")
-
-
-def _device_for(email: str) -> dict:
-    doc = db.devices.find_one({"user_email": email.strip().lower()})
-    if not doc:
-        raise HTTPException(400, "No paired device for this account.")
-    return doc
 
 
 # ------------------------------------------------------------------- endpoints
@@ -462,30 +388,6 @@ def login(body: LogIn):
     if not user or not verify_password(body.password, user["password"]):
         raise HTTPException(401, "Wrong email or password.")
     return out_user(user)
-
-
-@app.get("/devices/{email}")
-def get_device(email: str):
-    doc = db.devices.find_one({"user_email": email.strip().lower()})
-    return out_device(doc) if doc else None
-
-
-@app.post("/devices/pair")
-def pair(body: Pair):
-    email = body.email.strip().lower()
-    device_id = body.device_id.strip().upper()
-    if not device_id:
-        raise HTTPException(400, "A device ID is required.")
-    doc = {"user_email": email, **default_device(device_id),
-           "pairedAt": datetime.now(timezone.utc)}
-    db.devices.replace_one({"user_email": email}, doc, upsert=True)
-    return out_device(doc)
-
-
-@app.post("/devices/unpair")
-def unpair(body: Email):
-    db.devices.delete_one({"user_email": body.email.strip().lower()})
-    return {"ok": True}
 
 
 @app.post("/route")
@@ -635,50 +537,6 @@ def get_board(board_id: str):
     return out_board(doc, full=True)
 
 
-@app.post("/print")
-def start_print(body: PrintJob):
-    """Send a board's G-code to the paired ESP32 bridge. `check` runs GRBL's
-    validate-only mode ($C) first."""
-    device = _device_for(body.email)
-    try:
-        oid = ObjectId(body.board_id)
-    except InvalidId:
-        raise HTTPException(404, "Board not found.")
-    board = db.boards.find_one({"_id": oid})
-    if not board:
-        raise HTTPException(404, "Board not found.")
-    gcode = board.get("gcode")
-    if not gcode:
-        raise HTTPException(400, "This board has no G-code to send.")
-
-    headers = {"Content-Type": "text/plain"}
-    if body.check:
-        headers["X-Check"] = "1"
-    status, payload = esp_request(
-        f"{esp_base(device)}/print", method="POST",
-        data=gcode.encode("utf-8"), headers=headers)
-    if status >= 400:
-        raise HTTPException(502, payload.get("error", "Plotter rejected the job."))
-    return payload
-
-
-@app.get("/print/status/{email}")
-def print_status(email: str):
-    device = _device_for(email)
-    status, payload = esp_request(f"{esp_base(device)}/status")
-    if status >= 400:
-        raise HTTPException(502, payload.get("error", "Plotter status unavailable."))
-    return payload
-
-
-@app.post("/print/stop")
-def print_stop(body: Email):
-    device = _device_for(body.email)
-    _status, payload = esp_request(
-        f"{esp_base(device)}/stop", method="POST", data=b"")
-    return payload
-
-
 @app.patch("/board/{board_id}")
 def rename_board(board_id: str, body: RenameBoard):
     try:
@@ -696,21 +554,6 @@ def rename_board(board_id: str, body: RenameBoard):
     if not doc:
         raise HTTPException(404, "Board not found.")
     return out_board(doc, full=True)
-
-
-@app.patch("/devices/{email}")
-def rename_device(email: str, body: RenameDevice):
-    alias = body.alias.strip()
-    if not alias:
-        raise HTTPException(400, "A device name is required.")
-    doc = db.devices.find_one_and_update(
-        {"user_email": email.strip().lower()},
-        {"$set": {"alias": alias}},
-        return_document=ReturnDocument.AFTER,
-    )
-    if not doc:
-        raise HTTPException(404, "No paired device for this account.")
-    return out_device(doc)
 
 
 @app.delete("/board/{board_id}")
@@ -779,7 +622,26 @@ def machine_connect(body: ConnectRequest):
     except Exception as exc:  # noqa: BLE001 - pyserial raises many shapes
         raise HTTPException(502, f"Could not open {body.port}: {exc}") from exc
     firmware = session.connect(transport, body.port, body.baud)
+    if body.email:
+        # A convenience crumb so Connect is one click next session. It carries
+        # no identity and no authority: it cannot make a port exist, and
+        # connecting never consults it.
+        email = body.email.strip().lower()
+        db.machines.replace_one(
+            {"user_email": email},
+            {"user_email": email,
+             "last_port": body.port, "last_baud": body.baud},
+            upsert=True,
+        )
     return {"ok": True, "firmware": firmware}
+
+
+@app.get("/machine/last")
+def machine_last(email: str):
+    doc = db.machines.find_one({"user_email": email.strip().lower()})
+    if not doc:
+        return None
+    return {"port": doc["last_port"], "baud": doc["last_baud"]}
 
 
 @app.post("/machine/disconnect")

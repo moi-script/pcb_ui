@@ -1,7 +1,7 @@
 """MongoDB access for the TraceWorks web app.
 
 Connects to a local MongoDB (mongodb://localhost:27017 by default) and exposes
-three collections: users, devices, boards, plus a GridFS bucket holding the
+three collections: users, machines, boards, plus a GridFS bucket holding the
 source images of traced boards. Set MONGO_URL to point elsewhere.
 """
 import os
@@ -16,7 +16,7 @@ client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=3000)
 db = client[DB_NAME]
 
 users = db["users"]
-devices = db["devices"]
+machines = db["machines"]
 boards = db["boards"]
 
 # Source images for traced boards. GridFS rather than a field on the board:
@@ -25,9 +25,11 @@ boards = db["boards"]
 # Mongo's 16 MB document limit.
 sources = gridfs.GridFS(db, collection="sources")
 
-# Indexes (idempotent). One account per email, one device per account.
+# Indexes (idempotent). One account per email, one remembered port per
+# account — `machines` holds {user_email, last_port, last_baud} and nothing
+# else: it is a convenience crumb, not an identity.
 users.create_index([("email", ASCENDING)], unique=True)
-devices.create_index([("user_email", ASCENDING)], unique=True)
+machines.create_index([("user_email", ASCENDING)], unique=True)
 boards.create_index([("user_email", ASCENDING)])
 
 
