@@ -1,120 +1,166 @@
 "use client";
 
+import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import InlineEdit from "@/components/InlineEdit";
-import { useAuth } from "@/lib/auth";
 
-export default function DevicePage() {
-  const { session, unpair, renameDevice } = useAuth();
+import Dro from "@/components/Dro";
+import JogPad from "@/components/JogPad";
+import MachineConsole from "@/components/MachineConsole";
+import { api } from "@/lib/api";
+import { useMachine } from "@/lib/machine";
+
+export default function MachinePage() {
+  const { snap, console: lines, connected, live } = useMachine();
   const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
 
-  const device = session?.device;
-  if (!device) return null;
+  const state = snap?.state ?? "";
+  const alarm = state.startsWith("Alarm");
+  const jobRunning =
+    snap?.job?.state === "running" || snap?.job?.state === "paused";
+
+  async function guard(fn: () => Promise<unknown>) {
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  if (!connected) {
+    return (
+      <div className="mx-auto max-w-4xl px-6 py-8">
+        <span className="tlabel">Machine</span>
+        <h1 className="mt-1 text-2xl tracking-tight text-ink">
+          No machine connected.
+        </h1>
+        <div className="panel ticked mt-6 p-6">
+          <p className="text-sm text-muted">
+            {live
+              ? "The server is running but has no serial port open. Plug the controller into this PC over USB and pick its port."
+              : "Not talking to the server. Is the API running on port 8000?"}
+          </p>
+          <Link href="/connect" className="btn btn-copper mt-5">
+            Connect a machine →
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
-      <span className="tlabel">Device</span>
-      <h1 className="mt-1 text-2xl tracking-tight text-ink">
-        <InlineEdit
-          value={device.alias}
-          ariaLabel="Rename device"
-          onSave={async (next) => {
-            const r = await renameDevice(next);
-            if (!r.ok) throw new Error(r.error);
-          }}
-        />
-      </h1>
-
-      {/* identity */}
-      <div className="panel ticked mt-6 p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <span className="tlabel">Device ID</span>
-            <p className="mt-1 font-mono text-2xl tracking-wider text-ink">
-              <span className="text-copper">
-                {device.id.split("-")[0]}
-              </span>
-              -{device.id.split("-").slice(1).join("-")}
-            </p>
-          </div>
-          <span className="inline-flex items-center gap-2 rounded-sm border border-line-strong px-3 py-1.5">
-            <span className="tlabel">paired</span>
-          </span>
+    <div className="mx-auto max-w-5xl px-6 py-8">
+      {!live && (
+        <div className="mb-4 border border-warn px-4 py-2 font-mono text-xs text-warn">
+          reconnecting to the server… the readings below may be stale
         </div>
+      )}
 
-        <dl className="mt-6 grid gap-px overflow-hidden rounded border border-line bg-line sm:grid-cols-2">
-          <Field k="Controller" v={device.controller} />
-          <Field k="Firmware" v={device.firmware} />
-          <Field k="Connection" v={`${device.connection} · ${device.port}`} />
-          <Field k="Bed size" v={`${device.bed} mm`} />
-        </dl>
-      </div>
-
-      {/* machine profile */}
-      <div className="panel ticked mt-6 p-6">
-        <div className="flex items-center justify-between">
-          <span className="tlabel">Machine profile</span>
-          <span className="font-mono text-[0.7rem] text-faint">
-            must match FluidNC config.yaml
-          </span>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <span className="tlabel">Machine</span>
+          <h1 className="mt-1 font-mono text-2xl tracking-tight text-ink">
+            {snap?.conn.port}
+            <span className="ml-3 text-sm text-faint">
+              {snap?.conn.baud} baud
+            </span>
+          </h1>
+          <p className="mt-1 font-mono text-xs text-muted">
+            {snap?.conn.firmware}
+          </p>
         </div>
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <Profile label="Pen up (Z)" value={`${device.penUpZ} mm`} hint="servo lifted" />
-          <Profile label="Pen down (Z)" value={`${device.penDownZ} mm`} hint="servo on paper" />
-          <Profile label="Travel feed" value={`${device.travelFeed} mm/min`} hint="G0 rapid" />
-          <Profile label="Draw feed" value={`${device.drawFeed} mm/min`} hint="G1 draw" />
-        </div>
-        <p className="mt-4 font-mono text-[0.7rem] text-muted">
-          These line up with the servo pulse range in your FluidNC config. Keep
-          the two in step so the pen lifts and touches down where you expect.
-        </p>
-      </div>
-
-      {/* danger zone */}
-      <div className="panel mt-6 border-danger/30 p-6">
-        <span className="tlabel !text-danger">Unpair device</span>
-        <p className="mt-2 max-w-lg text-sm text-muted">
-          Release {device.id} from your account. We keep its job history, but
-          you won&apos;t be able to send anything to it until you pair it again
-          with its device ID.
-        </p>
         <button
-          onClick={async () => {
-            await unpair();
-            router.push("/connect");
-          }}
-          className="btn btn-ghost mt-4 !border-danger !text-danger hover:!bg-danger/5"
+          className="btn btn-ghost"
+          onClick={() =>
+            guard(async () => {
+              await api.machineDisconnect();
+              router.push("/connect");
+            })
+          }
         >
-          Unpair this device
+          Disconnect
         </button>
       </div>
-    </div>
-  );
-}
 
-function Field({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="bg-panel-2 p-4">
-      <p className="tlabel !text-[0.6rem]">{k}</p>
-      <p className="mt-1 font-mono text-sm text-ink">{v}</p>
-    </div>
-  );
-}
+      {error && (
+        <p className="mt-4 border border-danger px-4 py-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
 
-function Profile({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-}) {
-  return (
-    <div className="rounded border border-line bg-panel-2 p-4">
-      <p className="tlabel !text-[0.6rem]">{label}</p>
-      <p className="mt-1 font-mono text-lg text-ink">{value}</p>
-      <p className="mt-0.5 text-xs text-faint">{hint}</p>
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <div className="space-y-6">
+          <Dro snap={snap} />
+
+          <JogPad
+            disabled={!connected || alarm || jobRunning}
+            onJog={(axis, distance) =>
+              guard(() => api.jog(axis, distance))
+            }
+          />
+
+          <div className="panel p-5">
+            <span className="tlabel">Work zero</span>
+            <p className="mt-2 text-xs text-muted">
+              Connecting reset the controller, so work zero was cleared. Jog to
+              the corner of the board, then set it.
+            </p>
+            <div className="mt-4 grid grid-cols-4 gap-1.5">
+              {["X", "Y", "Z", "XYZ"].map((axes) => (
+                <button
+                  key={axes}
+                  className="btn btn-ghost font-mono text-xs"
+                  disabled={jobRunning}
+                  onClick={() => guard(() => api.zero(axes))}
+                >
+                  {axes === "XYZ" ? "zero all" : `zero ${axes}`}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-4 flex gap-1.5">
+              <button
+                className="btn btn-ghost flex-1"
+                disabled={jobRunning}
+                onClick={() => guard(() => api.home())}
+              >
+                Home ($H)
+              </button>
+              <button
+                className={`flex-1 btn ${alarm ? "btn-copper" : "btn-ghost"}`}
+                onClick={() => guard(() => api.unlock())}
+              >
+                Unlock ($X)
+              </button>
+            </div>
+          </div>
+
+          {/* Set apart from every other control: an e-stop next to a jog
+              button is an e-stop that gets pressed by accident, and a jog
+              button next to an e-stop is a jog that never happens. */}
+          <div className="border border-danger p-5">
+            <span className="tlabel !text-danger">Emergency stop</span>
+            <p className="mt-2 text-xs text-muted">
+              Soft-resets the controller immediately. Motion stops mid-move,
+              position becomes unknown, and work zero is lost.
+            </p>
+            <button
+              className="btn mt-4 w-full !border-danger !bg-danger !text-paper"
+              onClick={() => guard(() => api.estop())}
+            >
+              E-STOP
+            </button>
+          </div>
+        </div>
+
+        <MachineConsole
+          lines={lines}
+          disabled={!connected}
+          onSend={(line) => guard(() => api.command(line))}
+        />
+      </div>
     </div>
   );
 }
