@@ -1,0 +1,533 @@
+"""Owns the one serial connection to the one machine.
+
+A module-level singleton, not a per-account object: there is one physical
+plotter on the PC running this server. Keying the connection by user would
+model a fleet that does not exist and would let two browser tabs each
+believe they own the port.
+"""
+from __future__ import annotations
+
+import threading
+import time
+
+from fastapi import HTTPException
+
+from grbl.limits import AXIS_INDEX, LimitError, check_jog
+from grbl.profile import DEFAULT_PROFILE, Profile
+from grbl.protocol import Realtime
+from grbl.state import MachineState
+from grbl.streamer import ReplyEvent, Streamer, Transport
+
+BANNER_TIMEOUT = 3.0
+
+SIM_PORT = "SIM"
+
+
+def make_transport(port: str, baud: int) -> Transport:
+    """The transport for a port name. `SIM` is the simulator, not a device.
+
+    Routing the simulator through the same factory the real port uses means
+    every layer above this line — session, endpoints, job runner, the UI —
+    is exercised identically with and without hardware. A separate "sim
+    mode" flag threaded through those layers would leave them untested in
+    the configuration that ships.
+    """
+    if port == SIM_PORT:
+        from grbl.sim import GrblSim
+
+        return GrblSim()
+    return SerialTransport(port, baud)
+
+
+# How close the live mpos must be to a tracked planned jog target before an
+# "Idle" status report is trusted as proof that target was actually reached
+# (see Session.settle). Wide enough to absorb normal float/reporting noise,
+# tight enough that a stale pre-move report (whose mpos is still at the OLD
+# position) cannot be mistaken for a settled one.
+#
+# This must also stay smaller than the smallest jog step the UI offers
+# (userpage/app/dashboard/device/page.tsx, STEPS = [0.1, 1, 10, 100]) or the
+# match check below could pass for a real, not-yet-executed jog of that
+# size, silently disabling the whole mechanism for that step. Mirrored here
+# (rather than imported — it lives in a TS file) and asserted at import
+# time so a future finer step can't regress this silently.
+PLANNED_MATCH_EPS = 0.05
+SMALLEST_JOG_STEP_MM = 0.1
+assert PLANNED_MATCH_EPS < SMALLEST_JOG_STEP_MM, (
+    "PLANNED_MATCH_EPS must stay below the smallest jog step the UI offers, "
+    "or Session.settle() can mistake a real, unexecuted jog for a settled one"
+)
+
+
+class _Tainted:
+    """Sentinel for `Session._planned`: the tracked base is untrustworthy.
+
+    Distinct from `None` (meaning "nothing tracked; trust live mpos") and
+    from a `list[float]` (a trusted planned target). A two-valued model
+    cannot express "I no longer know where the queue ends" -- which is
+    exactly the state after a jog gets bounced by the controller (Alarm),
+    or after a command we can't parse (raw console line, coordinate zero)
+    may have started motion we have no target for. In that state, neither
+    the old target NOR live mpos can be trusted, so jogs must be refused
+    outright rather than validated against a guess.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return "TAINTED"
+
+
+TAINTED = _Tainted()
+
+
+class PositionUncertain(Exception):
+    """`_planned` is TAINTED: refuse the jog rather than guess a base."""
+
+
+class SerialTransport:
+    """pyserial wrapped in the Transport protocol."""
+
+    def __init__(self, port: str, baud: int) -> None:
+        import serial
+
+        # write_timeout keeps write() from blocking forever if the OS TX
+        # buffer fills or the USB adapter is yanked mid-write. Without it, a
+        # stuck write() would hold the streamer's lock indefinitely, and the
+        # watchdog thread — which relies on that same lock to notice the
+        # link is dead — would never get to run.
+        self._ser = serial.Serial(port, baud, timeout=0, write_timeout=1.0)
+        # Toggling DTR resets an Arduino, which is how we provoke the banner.
+        self._ser.dtr = False
+        time.sleep(0.1)
+        self._ser.dtr = True
+        time.sleep(0.2)
+
+    def write(self, data: bytes) -> None:
+        self._ser.write(data)
+
+    def read_available(self) -> bytes:
+        waiting = self._ser.in_waiting
+        return self._ser.read(waiting) if waiting else b""
+
+    def close(self) -> None:
+        try:
+            self._ser.close()
+        except Exception:
+            pass
+
+
+class Session:
+    """Holds the one connection and the one machine state.
+
+    There is no profile store behind this: `grbl.profile.DEFAULT_PROFILE` is
+    a frozen dataclass, so the envelope and feeds are the same object for the
+    life of the process. Slice-1 re-read its profile out of sqlite on every
+    connect; there is nothing here that could have changed in between.
+    """
+
+    profile: Profile
+
+    def __init__(self) -> None:
+        self.profile = DEFAULT_PROFILE
+        self.state = MachineState(self.profile)
+        self.streamer: Streamer | None = None
+
+        # `_planned` tracks the end of the last jog we validated and sent —
+        # the planner's queued target, not the live reported position. Jogs
+        # fired in rapid succession are validated against this instead of
+        # `state.mpos`, because `mpos` lags: the controller has not caught up
+        # to a just-sent jog yet, so a second jog checked against the stale
+        # live position could pass a check whose sum with the first exceeds
+        # the travel envelope.
+        #
+        # Three states, not two: `None` (nothing tracked; trust live mpos),
+        # a `list[float]` (a trusted target), or `TAINTED` (the base is
+        # unknown; refuse jogs until confirmed Idle). Falling back to live
+        # mpos is only safe when nothing is queued -- collapsing "unknown"
+        # into "trust mpos" is exactly what let a rejected-by-the-controller
+        # jog, or a raw command / zero mid-flight, poison the base downward
+        # (see PositionUncertain and the call sites below).
+        #
+        # A plain Lock (not MachineState's RLock) guards it: it protects a
+        # single small piece of state private to Session, is never held
+        # while calling into the streamer or MachineState (no I/O, no
+        # send_line under this lock). `reserve_jog` holds it across the whole
+        # read-base -> check -> commit sequence so two concurrent jog
+        # requests (rapid clicking fires them with no client-side
+        # serialization) can't both read the same base and both pass.
+        self._planned_lock = threading.Lock()
+        self._planned: list[float] | _Tainted | None = None
+
+        # Snapshot of MachineState.status_seq() taken at the moment `_planned`
+        # was last set to TAINTED. Only meaningful while `_planned is
+        # TAINTED`; settle() requires the CURRENT status_seq to have
+        # advanced past this snapshot (not just is_idle) before lifting the
+        # taint -- see settle() and taint_and_resync() below for why a bare
+        # `state == "Idle"` read is not enough on its own (N1).
+        self._planned_taint_seq: int | None = None
+
+    def require(self) -> Streamer:
+        if self.streamer is None or not self.streamer.connected:
+            raise HTTPException(409, "Machine is not connected.")
+        return self.streamer
+
+    def _on_streamer_event(self, event: object) -> None:
+        """MachineState.apply(), plus an immediate taint on alarm/error.
+
+        All the taint call sites above cover alarms *we* provoke (a jog
+        while already in Alarm, an out-of-envelope raw command). A hardware
+        fault -- a limit switch, an e-stop wired into the controller itself
+        -- can also alarm the controller with no REST call of ours in
+        between, and the only way we would otherwise learn about it is the
+        next background status poll, up to one poll interval later. During
+        that narrow window `session.state.state` can still read as
+        non-Alarm, and the jog route's Alarm gate is a `state.state` read,
+        so it would not fire. Reacting here, directly on the alarm REPLY
+        the controller sends (which arrives as soon as GRBL reports it, not
+        on our polling schedule), closes that window immediately rather
+        than waiting for the next poll to catch up -- and does so for any
+        cause of Alarm, not just the ones a REST route can see coming.
+
+        Also taints on any `"error"` reply, not just `"alarm"` (M2). GRBL
+        replies `error:N` (not `alarm:N`) to a single line it rejects while
+        otherwise staying in whatever state it was in -- e.g. `error:15`,
+        "travel exceeded", when soft limits are on ($20=1) and a jog would
+        overshoot. A jog line that draws an `error` reply means a target
+        was booked in `_planned` for a move that never actually happened:
+        exactly the stale-low shape this whole mechanism exists to close,
+        just via a different reply kind than `"alarm"`. Correlating a
+        specific error reply to a specific sent line is not attempted here
+        -- the streamer's flow-control accounting (`_pending`) tracks byte
+        cost per line, not a routable per-line callback, and this handler
+        must stay fast, never raise, and never call back into the streamer
+        (it runs on the streamer thread with `Streamer._lock` already
+        held). Tainting unconditionally on any error is the simple,
+        provably-safe rule: it costs one extra Idle-confirmation wait on
+        the rare line that legitimately errors, in exchange for never
+        leaving a target on the books for a move the controller refused.
+        """
+        self.state.apply(event)
+        if isinstance(event, ReplyEvent) and event.reply.kind in ("alarm", "error"):
+            self.taint_planned()
+
+    def connect(self, transport: Transport, port: str, baud: int) -> str:
+        self.disconnect()
+        self.state = MachineState(self.profile)
+
+        streamer = Streamer(
+            transport,
+            rx_buffer=self.profile.rx_buffer,
+            on_event=self._on_streamer_event,
+        )
+        self.streamer = streamer
+
+        # Wait for the controller to identify itself. The DTR toggle in
+        # SerialTransport is what actually resets an Arduino; this newline is
+        # only a nudge for a board that was already powered up. One byte, so
+        # the realtime contract still holds.
+        streamer.send_realtime(b"\n")
+        deadline = time.time() + BANNER_TIMEOUT
+        while time.time() < deadline and not self.state.firmware:
+            streamer.pump()
+            time.sleep(0.02)
+
+        if not self.state.firmware:
+            # Some boards miss the reset window; a status poll also proves life.
+            streamer.send_realtime(Realtime.STATUS)
+            deadline = time.time() + 1.0
+            while time.time() < deadline and self.state.state == "Disconnected":
+                streamer.pump()
+                time.sleep(0.02)
+
+        if not self.state.firmware and self.state.state == "Disconnected":
+            self.disconnect()
+            raise HTTPException(
+                502,
+                f"Opened {port} but the controller never identified itself. "
+                "Wrong baud rate, or not a GRBL controller.",
+            )
+
+        streamer.send_line("$I")
+        streamer.send_line("$$")
+        streamer.start(poll_hz=5.0)
+        self.state.set_connection(port, baud, self.state.firmware or "unknown")
+        self.clear_planned()
+        return self.state.firmware
+
+    def disconnect(self) -> None:
+        if self.streamer is not None:
+            self.streamer.stop()
+            try:
+                self.streamer.transport.close()
+            except Exception:
+                pass
+            self.streamer = None
+        self.state.set_connection(None, self.profile.baud, "")
+        self.clear_planned()
+
+    def clear_planned(self) -> None:
+        """Unconditionally reset `_planned` to None (trust live mpos).
+
+        Callers: `connect()` and `disconnect()` — and nothing else. Both
+        are safe because position is known immediately and exactly there: a
+        fresh connection has commanded nothing yet, and after a disconnect
+        no jog can reach `reserve_jog` again until `require()` passes,
+        which only happens after the next `connect()` resets everything
+        anyway.
+
+        `/machine/unlock` used to be listed here; it went through
+        `taint_and_resync` in round 3. `/machine/estop` used to call this and
+        now calls `taint_planned()` (round 4): a soft reset aborts motion
+        mid-move, so the machine stops at a point nobody knows, and live
+        mpos has certainly not caught up to it.
+        """
+        with self._planned_lock:
+            self._planned = None
+            self._planned_taint_seq = None
+
+    def taint_planned(self) -> None:
+        """Mark the base unknown. Refuses jogs until confirmed Idle.
+
+        Called whenever motion may be in flight and we can no longer prove
+        where it will end: a jog attempted while the controller reports
+        Alarm (the controller will bounce it with error:9, not move, but we
+        can't be sure whether prior queued motion already got cut off
+        somewhere unknown); a jog whose send may not have reached the
+        controller (dropped write / lost connection); a raw `/machine/command`
+        line (may itself be a motion command this route can't parse); and
+        `/machine/zero` (may run while a jog is still in flight; simplest
+        correct rule is to always taint rather than try to detect it).
+
+        Unlike `clear_planned`, this does NOT fall back to live mpos --
+        that fallback is exactly what let a controller-rejected jog (or an
+        unparsed raw command) poison the base downward in round 1. There is
+        nothing safe to fall back to here except refusing until `settle()`
+        confirms Idle.
+
+        Also snapshots `MachineState.status_seq()` into
+        `_planned_taint_seq`. `settle()` requires that counter to have
+        advanced past this snapshot before it will lift the taint. That is
+        a NECESSARY condition only: it rules out lifting on a report the
+        session had already applied before the taint, but it does NOT prove
+        the lifting report was GENERATED after the taint (a report in
+        flight at taint time advances the counter the moment it lands).
+        Round 3 claimed that stronger property and was wrong; what actually
+        proves the queue drained is the `statusQuiet` condition in
+        `settle()`. The seq read happens before `_planned_lock` is acquired
+        (not nested inside it) -- MachineState._lock is taken and released
+        first, so this never holds two locks at once and adds no new
+        ordering.
+        """
+        seq = self.state.status_seq()
+        with self._planned_lock:
+            self._planned = TAINTED
+            self._planned_taint_seq = seq
+
+    # Bound on how long taint_and_resync will wait, synchronously, for a
+    # fresh status report before giving up and leaving the taint in place.
+    # The calling routes (jog/cancel, home, zero, command, unlock) are sync
+    # `def`s running on FastAPI's threadpool, so a brief wait here is safe;
+    # unbounded would not be. On timeout the taint simply stays set -- the
+    # next jog attempt (or the background poller feeding a later settle())
+    # will lift it once a genuinely fresh Idle report arrives.
+    RESYNC_TIMEOUT = 0.25
+    RESYNC_POLL_INTERVAL = 0.02
+
+    def taint_and_resync(self, streamer: Streamer) -> None:
+        """Taint, then wait for a status report OBSERVED AFTER the taint.
+
+        `settle()`'s old "trust a bare Idle report" rule for lifting a
+        taint has a race: `MachineState.state` is only as fresh as the last
+        status report the background poll thread happened to drain, and a
+        report can be *generated* (query sent) before this taint-causing
+        line, yet not get *dispatched* (applied to MachineState) until
+        after it, purely because dispatch runs lazily on a ~5 Hz background
+        timer. If that stale report says Idle, a jog checked immediately
+        after would see current_state == "Idle" and wrongly lift the taint
+        before the real motion this call may have started has even been
+        reported (N1).
+
+        Round 4 note: the loop below is a best-effort *nudge*, not the
+        safety gate. It exists so the operator's next jog is not refused
+        purely because nobody had pumped the transport yet. The decision
+        about whether the taint may actually be lifted is `settle()`'s
+        alone, and this method calls it with a fresh atomic snapshot on
+        every iteration, so a taint whose queue genuinely drained is lifted
+        here immediately, and one whose queue did not simply stays set.
+
+        A single synchronous `pump()` right after sending `?` is NOT enough
+        to close this on real hardware: `SerialTransport.read_available()`
+        only returns bytes ALREADY sitting in the OS buffer
+        (`self._ser.in_waiting`) -- the reply this call's own `?` just
+        provoked is still on the wire, not yet arrived, so that first pump
+        typically drains nothing. (The bundled simulator masked this: its
+        `write()` appends the reply into its output list synchronously, so
+        the very next `pump()` genuinely does see it -- true for the sim,
+        never true for real serial.)
+
+        So instead of trusting a single pump, this polls `pump()` in a
+        short bounded loop (see RESYNC_TIMEOUT/RESYNC_POLL_INTERVAL) until
+        `MachineState.status_seq()` has advanced past the value snapshotted
+        by `taint_planned()` above. The status query is written exactly
+        once, before the loop starts; the transport is a strict FIFO
+        guarded by one lock (`Streamer._lock` via the sim, or the OS serial
+        buffer via real hardware), so whatever was written before that
+        query (the taint-causing line itself) is necessarily queued ahead
+        of it -- meaning the first status report dispatched with a fresher
+        seq than the snapshot is guaranteed to reflect state at least as
+        current as this call's own effect, not a stale report that merely
+        happened to dispatch late. Looping is what lets the common case
+        (reply arrives within a poll interval or two) resolve without
+        costing the operator an extra click, while staying bounded for the
+        uncommon case where it does not arrive in time.
+
+        Jogs themselves stay fire-and-forget -- this is not called from the
+        jog route itself, only from routes that are already occasional and
+        can afford a bounded synchronous wait (raw command, zero, cancel,
+        home, unlock).
+        """
+        self.taint_planned()
+        with self._planned_lock:
+            target_seq = self._planned_taint_seq
+
+        streamer.send_realtime(Realtime.STATUS)
+        deadline = time.monotonic() + self.RESYNC_TIMEOUT
+        while True:
+            streamer.pump()
+            # Read the streamer's own property first, then the state
+            # snapshot, then (inside settle) `_planned_lock`: the
+            # established order, no lock held across another.
+            quiet = streamer.quiet
+            snap = self.state.snapshot()
+            self.settle(snap, quiet)
+            if target_seq is not None and snap["statusSeq"] > target_seq:
+                return
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(self.RESYNC_POLL_INTERVAL)
+
+    def settle(self, snap: dict, streamer_quiet: bool) -> None:
+        """Clear a matched target, or a confirmed-drained taint, on Idle.
+
+        A plain `MachineState.state == "Idle"` read is not enough on its
+        own to trust as "the queue drained": status polling runs on a
+        background thread at a fixed rate, so a report processed right
+        after we send a jog can still be one that was IN FLIGHT before we
+        sent it -- generated (and so still reflecting the pre-jog position)
+        before our line went out, but not applied to MachineState until
+        after, purely because of unrelated thread scheduling. Trusting a
+        bare Idle read there would clear `_planned` while the real move is
+        still in progress, and the next jog would then be checked against a
+        live `mpos` that hasn't caught up either -- exactly the hole this
+        whole mechanism exists to close.
+
+        For a tracked TARGET, that's solved by requiring the reported
+        `mpos` to actually MATCH the target (within `PLANNED_MATCH_EPS`)
+        before trusting Idle: a stale, pre-move report necessarily still
+        shows the old position and so cannot pass the match by accident,
+        while a report that legitimately arrives once the controller has
+        caught up will. That's a property of the data itself, not of when
+        it happened to be processed.
+
+        A TAINT has no numeric target to match against -- that's the whole
+        point of tainting instead of leaving the old (possibly wrong) value
+        in place. Rounds 2 and 3 tried to make Idle trustworthy by reasoning
+        about WHEN the report showed up: round 2 trusted a bare cached Idle,
+        round 3 required `status_seq()` to have advanced past a snapshot
+        taken at taint time. Both are statements about arrival order, and
+        arrival order cannot answer "has the queue drained?":
+
+        - a report generated BEFORE the taint but still in flight when the
+          taint is set advances the counter the instant it lands, so it
+          satisfies the round-3 check while describing pre-taint reality;
+        - worse, real GRBL pulls `?` out of the RX stream in its ISR, so it
+          can answer `Idle` at the pre-jog position while our jog lines are
+          still sitting unparsed in its RX buffer -- a report provably
+          generated after our query can still read Idle-at-the-old-position.
+
+        So round 4 gates on a property of the DATA instead, the same shape
+        as the target-match rule above. GRBL emits `ok` for a line only
+        after it has parsed and queued it, and its serial output is FIFO.
+        `snap["statusQuiet"]` records whether the streamer held zero
+        unacknowledged lines at the moment THIS report was dispatched (see
+        StatusEvent.quiet), i.e. whether every line we had sent was already
+        parsed and queued by the controller before it generated the report.
+        Idle + that = the planner really was empty with nothing of ours
+        left outside it: the queue drained. `streamer_quiet` adds the same
+        statement for right now, covering anything handed to the streamer
+        after that report was dispatched.
+
+        The four conditions for lifting a taint, all required:
+          1. the report says Idle;
+          2. it was dispatched with nothing of ours unacknowledged;
+          3. nothing of ours is unacknowledged now either;
+          4. `statusSeq` has advanced past the taint-time snapshot -- kept
+             as a necessary condition (it rules out lifting on a report the
+             session had already applied before the taint) but, unlike what
+             round 3 claimed, NOT sufficient on its own.
+
+        Everything about the machine comes from ONE snapshot: `state`,
+        `mpos`, `statusQuiet` and `statusSeq` read separately could straddle
+        an incoming report and mix a newer counter with older coordinates.
+        `streamer_quiet` is passed in, read by the caller before any leaf
+        lock is taken, so `_planned_lock` never nests inside
+        `Streamer._lock`.
+        """
+        if snap["state"] != "Idle":
+            return
+        live_mpos = snap["mpos"]
+        current_seq = snap["statusSeq"]
+        report_quiet = bool(snap["statusQuiet"])
+        with self._planned_lock:
+            if self._planned is TAINTED:
+                if (
+                    report_quiet
+                    and streamer_quiet
+                    and self._planned_taint_seq is not None
+                    and current_seq > self._planned_taint_seq
+                ):
+                    self._planned = None
+                    self._planned_taint_seq = None
+                return
+            if self._planned is None:
+                return
+            if all(
+                abs(a - b) < PLANNED_MATCH_EPS
+                for a, b in zip(self._planned, live_mpos)
+            ):
+                self._planned = None
+
+    def reserve_jog(
+        self, live_mpos: list[float], axis: str, distance: float
+    ) -> list[float]:
+        """Atomically validate and reserve one jog's target.
+
+        Holds `_planned_lock` across the whole read-base -> check_jog ->
+        commit sequence (not just the individual reads), so two jog
+        requests racing on FastAPI's threadpool -- rapid clicking fires
+        them with no client-side serialization or disabling, the exact
+        gesture that found the original defect -- cannot both read the
+        same base, both pass `check_jog`, and both commit: whichever
+        acquires the lock second sees the first one's committed target.
+        Raises `PositionUncertain` if tainted, `LimitError` (from
+        `check_jog`, uncaught here) if the resulting move would leave the
+        envelope. Never calls out to the streamer or MachineState while
+        holding the lock -- `send_line` happens after this returns.
+        """
+        with self._planned_lock:
+            if self._planned is TAINTED:
+                raise PositionUncertain(
+                    "Position is uncertain after an alarm or manual "
+                    "command. Wait for the machine to reach Idle, then "
+                    "try again."
+                )
+            base = list(self._planned) if self._planned is not None else list(live_mpos)
+            check_jog(self.profile, (base[0], base[1], base[2]), axis, distance)
+            target = list(base)
+            target[AXIS_INDEX[axis.upper()]] += distance
+            self._planned = target
+            return target
+
+
+session = Session()
