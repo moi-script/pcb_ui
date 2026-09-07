@@ -7,7 +7,8 @@ uvicorn[standard]
 python-multipart
 pymongo
 
-# Serial streaming (pcb_send.py), only needed to talk to real hardware
+# Serial streaming: the machine session (machine.py, grbl/) and the
+# standalone pcb_send.py CLI. TRACEWORKS_SIM=1 needs no hardware.
 pyserial
 
 # Image tracing (tracer/) — centerline skeletonisation
