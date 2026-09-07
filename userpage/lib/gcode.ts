@@ -18,6 +18,13 @@ export type Segment = {
   z2: number;
   /** true for G0 (pen-up travel), false for G1 (pen-down drawing) */
   rapid: boolean;
+  /**
+   * 1-based index of the source line in the CLEANED line list — comments and
+   * blanks stripped, exactly as serverside/job.py's load_lines() counts them.
+   * The backend reports progress as a count of those lines, so anything else
+   * here would drift by however many comments the file happens to carry.
+   */
+  line: number;
 };
 
 export type Bounds = {
@@ -40,6 +47,20 @@ export type ParsedGcode = {
 };
 
 const MM_PER_INCH = 25.4;
+
+/**
+ * The line as serverside/job.py's load_lines() would keep it: `;` to
+ * end-of-line removed, then trimmed. Empty means the backend drops it and
+ * never counts it, so neither may we.
+ *
+ * Deliberately NOT the same as `decomment` below, which also strips `( ... )`
+ * for parsing. A parenthesised-only line still costs the backend a line
+ * number, and stamping segments with anything else would drift the live
+ * progress by however many such lines the file carries.
+ */
+function keptByBackend(raw: string): string {
+  return raw.split(";", 1)[0].trim();
+}
 
 /** Strip `;` to end-of-line and `( ... )` comments. */
 function decomment(line: string): string {
@@ -90,7 +111,13 @@ export function parseGcode(text: string): ParsedGcode {
     if (pz > maxZ) maxZ = pz;
   };
 
+  let lineNo = 0;
+
   for (const raw of text.split(/\r?\n/)) {
+    // Counted before any parser-side skipping, so the number stays in step
+    // with the backend even on lines this parser ignores ($C, M3, G4, …).
+    if (keptByBackend(raw)) lineNo += 1;
+
     const line = decomment(raw);
     if (!line.trim()) continue;
 
@@ -154,6 +181,7 @@ export function parseGcode(text: string): ParsedGcode {
       y2: ny,
       z2: nz,
       rapid: motion === 0,
+      line: lineNo,
     });
 
     x = nx;

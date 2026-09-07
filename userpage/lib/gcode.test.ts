@@ -6,7 +6,7 @@ describe("parseGcode", () => {
   it("turns a feed move into a segment from the current position", () => {
     const { segments } = parseGcode("G1 X10 Y20");
     expect(segments).toEqual([
-      { x1: 0, y1: 0, z1: 0, x2: 10, y2: 20, z2: 0, rapid: false },
+      { x1: 0, y1: 0, z1: 0, x2: 10, y2: 20, z2: 0, rapid: false, line: 1 },
     ]);
   });
 
@@ -178,5 +178,22 @@ describe("parseGcode", () => {
       const lift = segments.filter((s) => s.rapid).at(-1);
       expect(lift).toMatchObject({ z2: 5 });
     });
+  });
+});
+
+describe("cleaned-file line numbers", () => {
+  it("counts the lines the backend counts, not the ones it parses", () => {
+    // load_lines() strips `;` comments and blanks and keeps everything else,
+    // including lines this parser ignores. Segment.line must agree with it
+    // or the live progress bar drifts against the machine.
+    const { segments } = parseGcode(
+      ["; a comment", "", "G21 G90", "G1 X10", "M3 S255", "G1 X20"].join("\n")
+    );
+    expect(segments.map((s) => s.line)).toEqual([2, 4]);
+  });
+
+  it("counts a parenthesised-only line, because the backend sends it", () => {
+    const { segments } = parseGcode(["(setup)", "G1 X1"].join("\n"));
+    expect(segments[0].line).toBe(2);
   });
 });

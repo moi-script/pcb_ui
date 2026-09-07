@@ -9,7 +9,51 @@ import { parseGcode, type Segment } from "@/lib/gcode";
 type Props = {
   gcode: string;
   className?: string;
+  /**
+   * The last line the controller acknowledged, or null when no job is
+   * running. Drives which segments render as drawn.
+   *
+   * Deliberately not used to place the pen: GRBL acknowledges a line when
+   * it has parsed and QUEUED it, not when it has executed it, so this index
+   * runs ahead of the machine — sometimes by a hundred moves.
+   */
+  liveIndex?: number | null;
+  /** The machine's reported work position. Where the pen actually is. */
+  penPos?: [number, number, number] | null;
 };
+
+/**
+ * Progress 0..1 for "the controller has acknowledged through line N".
+ *
+ * Segments carry the cleaned-file line number they came from, and one line
+ * can emit several segments (a G1 with X, Y and Z all changing). Take the
+ * LAST segment of the acknowledged line, not the first, or the path lags a
+ * segment behind the machine for the whole job.
+ */
+function progressForLine(
+  segments: Segment[],
+  ends: Float64Array,
+  total: number,
+  line: number
+): number {
+  if (segments.length === 0 || total === 0) return 0;
+  if (line <= 0) return 0;
+
+  let lo = 0;
+  let hi = segments.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (segments[mid].line <= line) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (found < 0) return 0;
+  return ends[found] / total;
+}
 
 /* UGS conventions: red X, green Y, blue Z, and a tool marker at the pen tip.
  * The path colours come from the site theme so the panel doesn't read as a
@@ -146,7 +190,14 @@ function buildPen(length: number) {
   return { pen: g, geometries: parts };
 }
 
-export default function GcodeVisualizer({ gcode, className }: Props) {
+export default function GcodeVisualizer({
+  gcode,
+  className,
+  liveIndex = null,
+  penPos = null,
+}: Props) {
+  // A live job owns the timeline; the scrubber would only fight it.
+  const following = liveIndex != null;
   const parsed = useMemo(() => parseGcode(gcode), [gcode]);
   const timeline = useMemo(() => buildTimeline(parsed.segments), [parsed]);
 
@@ -159,6 +210,10 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
   // 0..1 through the job by distance. Kept in a ref for the animation loop and
   // mirrored into state for the slider, so rAF never waits on a React render.
   const progressRef = useRef(1);
+  // Read inside the animation loop, which is set up once and must not close
+  // over a stale `following`.
+  const followingRef = useRef(false);
+  followingRef.current = following;
   const [progress, setProgress] = useState(1);
   // How high a pen-up reads in the scene, in mm. A view setting only: the
   // G-code says ±0.5 mm because that is what the firmware wants, and the
@@ -174,6 +229,7 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
     setLift: (mm: number) => void;
     defaultLift: number;
     setTravelVisible: (v: boolean) => void;
+    setPenPos: (pos: [number, number, number] | null) => void;
   } | null>(null);
 
   const playingRef = useRef(playing);
@@ -314,6 +370,9 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
       apply(progressRef.current);
     };
 
+    // Where the machine reports its pen, when anything is reporting.
+    let penOverride: [number, number, number] | null = null;
+
     /** Place the pen and reveal the path up to `p` (0..1 by distance). */
     const apply = (p: number) => {
       const { ends, drawnUpTo, rapidUpTo, total } = timeline;
@@ -338,14 +397,24 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
       const segLen = ends[i] - segStart;
       const t = segLen > 0 ? Math.min((target - segStart) / segLen, 1) : 1;
 
-      // Interpolating unit Z means the pen visibly rises and falls across a
-      // Z move rather than teleporting between the two states.
-      const uz = unitZ(s.z1) + (unitZ(s.z2) - unitZ(s.z1)) * t;
-      pen.position.set(
-        s.x1 + (s.x2 - s.x1) * t,
-        s.y1 + (s.y2 - s.y1) * t,
-        uz * lift,
-      );
+      // The pen goes where the machine says it is when we are being told;
+      // the interpolated scrub point is a guess that runs ahead of it.
+      if (penOverride) {
+        pen.position.set(
+          penOverride[0],
+          penOverride[1],
+          unitZ(penOverride[2]) * lift,
+        );
+      } else {
+        // Interpolating unit Z means the pen visibly rises and falls across a
+        // Z move rather than teleporting between the two states.
+        const uz = unitZ(s.z1) + (unitZ(s.z2) - unitZ(s.z1)) * t;
+        pen.position.set(
+          s.x1 + (s.x2 - s.x1) * t,
+          s.y1 + (s.y2 - s.y1) * t,
+          uz * lift,
+        );
+      }
 
       // Reveal completed segments of each type. Two draw calls, whatever the
       // board size — no per-frame geometry rebuild.
@@ -362,6 +431,10 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
       resetView,
       setLift,
       defaultLift,
+      setPenPos: (pos: [number, number, number] | null) => {
+        penOverride = pos;
+        apply(progressRef.current);
+      },
       setTravelVisible: (v: boolean) => {
         travelLines.visible = v;
       },
@@ -389,7 +462,7 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
     const loop = (now: number) => {
       const dt = (now - last) / 1000;
       last = now;
-      if (playingRef.current && timeline.total > 0) {
+      if (playingRef.current && !followingRef.current && timeline.total > 0) {
         // 120 mm/s at 1x — fast enough to watch a board finish, slow enough
         // to follow the pen.
         const step = (120 * speedRef.current * dt) / timeline.total;
@@ -434,6 +507,23 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
     api.current?.setTravelVisible(showTravel);
   }, [showTravel]);
 
+  useEffect(() => {
+    if (liveIndex == null || !api.current) return;
+    const p = progressForLine(
+      parsed.segments,
+      timeline.ends,
+      timeline.total,
+      liveIndex
+    );
+    progressRef.current = p;
+    setProgress(p);
+    api.current.apply(p);
+  }, [liveIndex, parsed, timeline]);
+
+  useEffect(() => {
+    api.current?.setPenPos(penPos);
+  }, [penPos, parsed, timeline]);
+
   const scrub = (p: number) => {
     progressRef.current = p;
     setProgress(p);
@@ -456,48 +546,71 @@ export default function GcodeVisualizer({ gcode, className }: Props) {
   return (
     <div className={className}>
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-2.5">
-        <button
-          onClick={() => {
-            if (progressRef.current >= 1) scrub(0);
-            setPlaying((v) => !v);
-          }}
-          className="tlabel w-16 text-left hover:text-copper"
-        >
-          {playing ? "❚❚ pause" : progress >= 1 ? "↻ replay" : "▶ play"}
-        </button>
+        {/* A scrubber that fights a live feed is a control that does nothing
+            you can see, so while a job is running it is replaced by what the
+            machine is actually reporting. */}
+        {following ? (
+          <>
+            <span className="tlabel flex items-center gap-2 !text-copper">
+              <span className="dot dot-live" />
+              live
+            </span>
+            <div className="h-1 min-w-40 flex-1 bg-line">
+              <div
+                className="h-full bg-copper"
+                style={{ width: `${Math.round(progress * 100)}%` }}
+              />
+            </div>
+            <span className="w-10 text-right font-mono text-xs text-muted">
+              {Math.round(progress * 100)}%
+            </span>
+          </>
+        ) : (
+          <>
+            <button
+              onClick={() => {
+                if (progressRef.current >= 1) scrub(0);
+                setPlaying((v) => !v);
+              }}
+              className="tlabel w-16 text-left hover:text-copper"
+            >
+              {playing ? "❚❚ pause" : progress >= 1 ? "↻ replay" : "▶ play"}
+            </button>
 
-        <input
-          type="range"
-          min={0}
-          max={1000}
-          value={Math.round(progress * 1000)}
-          onChange={(e) => {
-            setPlaying(false);
-            scrub(Number(e.target.value) / 1000);
-          }}
-          aria-label="Scrub toolpath"
-          className="h-1 min-w-40 flex-1 cursor-pointer accent-copper"
-        />
+            <input
+              type="range"
+              min={0}
+              max={1000}
+              value={Math.round(progress * 1000)}
+              onChange={(e) => {
+                setPlaying(false);
+                scrub(Number(e.target.value) / 1000);
+              }}
+              aria-label="Scrub toolpath"
+              className="h-1 min-w-40 flex-1 cursor-pointer accent-copper"
+            />
 
-        <span className="w-10 text-right font-mono text-xs text-muted">
-          {Math.round(progress * 100)}%
-        </span>
+            <span className="w-10 text-right font-mono text-xs text-muted">
+              {Math.round(progress * 100)}%
+            </span>
 
-        <label className="flex items-center gap-1.5 font-mono text-xs text-muted">
-          <span className="text-faint">speed</span>
-          <select
-            value={speed}
-            onChange={(e) => setSpeed(Number(e.target.value))}
-            className="border border-line bg-panel-2 px-1 py-0.5"
-            aria-label="Playback speed"
-          >
-            {[0.25, 0.5, 1, 2, 4, 8].map((s) => (
-              <option key={s} value={s}>
-                {s}×
-              </option>
-            ))}
-          </select>
-        </label>
+            <label className="flex items-center gap-1.5 font-mono text-xs text-muted">
+              <span className="text-faint">speed</span>
+              <select
+                value={speed}
+                onChange={(e) => setSpeed(Number(e.target.value))}
+                className="border border-line bg-panel-2 px-1 py-0.5"
+                aria-label="Playback speed"
+              >
+                {[0.25, 0.5, 1, 2, 4, 8].map((s) => (
+                  <option key={s} value={s}>
+                    {s}×
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
 
         <label
           className="flex items-center gap-1.5 font-mono text-xs text-muted"
