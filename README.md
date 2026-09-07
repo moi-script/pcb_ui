@@ -2,7 +2,8 @@
 
 The full stack for the single-layer PCB pen-plotter pipeline: upload a KiCad
 board or an image, route it into G-code, preview the toolpath in the browser,
-and stream it to a FluidNC machine, paired to your account by **device ID**.
+and plot it — over a USB cable to an Arduino running GRBL, the way Universal
+Gcode Sender works. Plug it in, pick the port, connect, run.
 
 Frontend and backend live side by side in this one repo.
 
@@ -27,6 +28,10 @@ cd serverside
 pip install -r requirements.txt
 uvicorn server:app --reload --port 8000     # http://localhost:8000/docs
 
+# ...or with no hardware attached: adds a port named SIM that behaves like a
+# GRBL 1.1 controller, so connect, jog, zero and plotting all work.
+TRACEWORKS_SIM=1 uvicorn server:app --reload --port 8000
+
 # Terminal 2 — frontend
 cd userpage
 npm install
@@ -43,11 +48,12 @@ npm run dev                                 # http://localhost:3000
 
 **`serverside/`** — FastAPI (`server.py`) wrapping the PCB pipeline
 (`pcb_read.py` → `pcb_gcode.py` → `pcb_send.py`) and the image tracer
-(`tracer/`). Accounts, devices, and routed boards are stored in MongoDB
-(`db.py`, database `traceworks`). It is also a standalone CLI pipeline —
-`python main.py` — and has its own [README](serverside/README.md),
+(`tracer/`), and owning the serial link to the machine (`grbl/`,
+`machine.py`, `job.py`). Accounts, routed boards, and the last serial port used
+are stored in MongoDB (`db.py`, database `traceworks`). It is also a standalone
+CLI pipeline — `python main.py` — and has its own [README](serverside/README.md),
 [DOCS.md](serverside/DOCS.md), and [HARDWARE.md](serverside/HARDWARE.md) for the
-ESP32 / FluidNC build.
+controller build.
 
 **`machine-control-slice-1/`** — a separate, self-contained app on its own git
 worktree branch: its own Next.js UI *and* its own FastAPI backend that owns the
@@ -58,22 +64,37 @@ the same ports, so run one stack at a time. See RUNNING.md.
 ## Pages (`userpage/`)
 | Route | What it is |
 |-------|-----------|
-| `/` | Marketing landing: pipeline, device-pairing story, hardware, pricing |
+| `/` | Marketing landing: pipeline, hardware, pricing |
 | `/signup`, `/login` | Account creation / sign-in (stored in MongoDB via the API) |
-| `/connect` | **Device pairing**: enter the device ID, watch the FluidNC handshake, bind it to your account |
-| `/dashboard` | Overview: paired device, your routed boards, travel-saved stats |
+| `/connect` | **Machine connect**: pick the serial port and baud rate, connect |
+| `/dashboard` | Overview: machine status, your routed boards, travel-saved stats |
 | `/dashboard/projects` | Upload a `.kicad_pcb` to route, or an image to trace; both are saved to your account |
-| `/dashboard/projects/[id]` | Board detail: layer-toggle preview of the real traces, route report, real G-code (downloadable), stream-to-device with a dry-check |
-| `/dashboard/device` | Device identity, machine profile, unpair |
+| `/dashboard/projects/[id]` | Board detail: layer-toggle preview of the real traces, route report, real G-code (downloadable), and Plot — with a dry-check, live progress, and a toolpath that fills in as the machine draws |
+| `/dashboard/device` | Machine: live position, jog pad, zeroing, home, unlock, console, E-stop |
 
 ## How it connects
 - **Upload → route:** the uploader POSTs your `.kicad_pcb` to `POST /route`. The
   API parses it (`pcb_read.extract_wiring`), runs `pcb_gcode.generate_gcode`,
   stores the result in MongoDB, and returns the board. The detail page renders
   the real tracks and G-code, not a sample.
-- **Accounts & devices** live in MongoDB (`traceworks` database: `users`,
-  `devices`, `boards`). A light session (name, email, paired device) is kept in
-  localStorage so the browser remembers who's signed in.
+- **Plot:** the backend runs on the same PC as the browser, so it — not the
+  tab — owns the COM port. A browser tab cannot open a serial port;
+  `localhost:8000` can. `POST /machine/connect` opens it, `POST /machine/run`
+  streams the board's stored G-code under GRBL's character-counting flow
+  control, and `WS /machine/ws` pushes position, console lines and job progress
+  back at up to 10 Hz.
+- **Progress is counted in acknowledged lines, position in `WPos`.** GRBL
+  answers `ok` when it has parsed and *queued* a line, not when it has drawn
+  it, so the line counter runs ahead of the pen. The UI shows both and names
+  them for what they are.
+- **Accounts & boards** live in MongoDB (`traceworks` database: `users`,
+  `machines`, `boards`). A light session (name, email) is kept in localStorage
+  so the browser remembers who's signed in. `machines` holds only the last port
+  and baud, as a convenience so Connect is one click next time — it carries no
+  identity and connecting never requires it.
+- **Connecting resets the controller.** Opening the port toggles DTR and the
+  Arduino reboots, so work zero is cleared every session. Set it on the Machine
+  page, after connecting, before plotting.
 - The built-in `labExam` sample geometry in `board_raw.json` is only used for the
   marketing/landing previews, not the dashboard.
 
@@ -118,3 +139,13 @@ way to find out the drawing runs off the edge of the work.
 - Auth is intentionally simple: passwords are hashed (PBKDF2) but there's no
   token/JWT or session expiry, and endpoints trust the email passed from the
   client. Fine for local development; add real sessions before exposing it.
+- **One machine, one connection, one PC.** The serial session is a
+  process-wide singleton, not a per-account object: there is one plotter on
+  the end of one cable. Two browser tabs share it rather than each believing
+  they own it.
+- **Connecting resets the controller and clears work zero.** Opening the port
+  toggles DTR and the Arduino reboots. This is normal — UGS does the same —
+  but it means zero has to be set after connecting, every session.
+- **Stop is not E-stop.** Stop drops the rest of the file and lets the moves
+  already inside the controller run out, so work zero survives. E-stop
+  soft-resets: motion ends immediately and position and zero are both lost.

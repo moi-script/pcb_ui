@@ -24,8 +24,10 @@ pcb_ui/
 - **Python 3.10+** — `python --version`
 - **Node 18.18+** — `node --version`
 - **MongoDB running locally** on `mongodb://localhost:27017`. The API stores
-  accounts, paired devices, and routed boards there and will fail on the first
-  request without it.
+  accounts and routed boards there and will fail on the first request without
+  it.
+- **An Arduino running GRBL 1.1 on a USB cable** — optional. Without one, set
+  `TRACEWORKS_SIM=1` and the whole app works against a simulated controller.
 
 Check Mongo is up before anything else:
 
@@ -111,6 +113,18 @@ MONGO_URL=mongodb://localhost:27017
 MONGO_DB=traceworks
 ```
 
+The machine is reached over USB serial by the backend, which runs on the same
+PC as the browser — a tab cannot open a COM port, `localhost:8000` can. One
+variable controls it:
+
+```
+TRACEWORKS_SIM=1     # adds a port named SIM: a modelled GRBL 1.1 controller
+```
+
+With it set, `/connect` lists `SIM` alongside any real ports, and connect,
+jog, zero, home, the console and plotting a whole board all work with nothing
+plugged in. Leave it unset to see only real hardware.
+
 ---
 
 ## Other things you can run
@@ -123,7 +137,8 @@ cd serverside && python -m pytest -q
 cd serverside && python main.py
 cd serverside && python main.py --skip-preview   # skip the matplotlib steps
 
-# Stream a .gcode file straight to the machine over USB serial
+# Stream a .gcode file straight to the machine, outside the API entirely.
+# A standalone CLI: the web app has its own serial path (grbl/, machine.py).
 cd serverside && python pcb_send.py --check      # validate without moving anything
 
 # Production frontend build
@@ -154,6 +169,24 @@ Same cause. Or call it through Python: `python -m uvicorn server:app --reload --
 
 **Changed `NEXT_PUBLIC_API_URL` and nothing happened**
 Restart the dev server. Those variables are inlined at build time.
+
+**"No serial ports found — is the cable plugged in?" on `/connect`**
+The backend enumerates the ports, so check it from that side.
+- Plugged in after the page loaded? Press **Rescan**; the list is not live.
+- **Windows:** open Device Manager → Ports (COM & LPT). No entry, or a warning
+  triangle, means the USB-serial driver is missing — CH340 or CP2102 depending
+  on the board.
+- **Linux:** the port exists (`ls /dev/ttyUSB* /dev/ttyACM*`) but is not
+  readable unless you are in the `dialout` group:
+  `sudo usermod -aG dialout $USER`, then log out and back in.
+- Charge-only USB cables carry no data. If the board powers up but no port
+  appears, try another cable before anything else.
+- No hardware at hand? Restart the backend with `TRACEWORKS_SIM=1`.
+
+**Connected, but the machine plots in the wrong place**
+Work zero was cleared when you connected — opening the port resets the
+controller. Jog to the corner of the board on `/dashboard/device` and press
+**zero all** before plotting.
 
 ---
 

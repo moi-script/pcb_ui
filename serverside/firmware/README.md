@@ -1,5 +1,10 @@
 # ESP32 G-code Bridge
 
+> **Not used by the API.** The backend now talks to the controller over USB
+> serial (`serverside/grbl/`, `serverside/machine.py`). This directory keeps
+> the ESP32 bridge sketch and `esp_mock.py` for reference and for a possible
+> future wireless transport; nothing in the running app calls it.
+
 `esp32_bridge/esp32_bridge.ino` turns an ESP32 into a WiFi-to-serial bridge: it
 receives a G-code job over HTTP from the TraceWorks backend and streams it,
 line by line, to an **Arduino running GRBL** over serial — using GRBL's standard

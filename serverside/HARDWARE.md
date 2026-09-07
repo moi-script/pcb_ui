@@ -5,8 +5,31 @@ project. The controller runs **FluidNC** — free, open-source CNC firmware that
 you flash onto an ESP32. You don't write or build it; you install it once.
 
 ```
-KiCad → pcb_gcode.py → labExam.gcode → pcb_send.py → [ESP32 running FluidNC] → motors → pen
+KiCad → pcb_gcode.py → G-code → the backend's serial link → [controller] → motors → pen
 ```
+
+> The build below is the FluidNC/ESP32 machine this project was written
+> against. The web app talks **GRBL 1.1 over USB serial** and does not care
+> which board is on the other end, so an Arduino running GRBL (or
+> `grbl_servo_z`, which is what `pcb_gcode.py` emits for) works the same way.
+
+---
+
+
+## 0. How the web app reaches this machine
+
+Plug the controller into the PC running the backend with a **data** USB cable.
+That is the whole connection story: the backend owns the serial port, because
+a browser tab cannot open one and `localhost:8000` can. Open `/connect`, pick
+the port, press Connect.
+
+There is no device ID, no pairing, and nothing on the network. If you want to
+try the app without hardware, start the backend with `TRACEWORKS_SIM=1` and
+connect to the port named `SIM`.
+
+**Connecting resets the controller.** Opening the port toggles DTR and the
+board reboots, so work zero is cleared every session — set it on
+`/dashboard/device` after connecting, before plotting.
 
 ---
 

@@ -21,7 +21,8 @@ copper-milling users are already served by FlatCAM — not our audience.)
 |-------|----------|-----------|
 | KiCad → coordinates → G-code | **Build** (done) | Thin; this is where our simplicity lives |
 | Preview / verification UI | **Build** (in progress) | This is the product |
-| Motion control on the chip | **Reuse GRBL / FluidNC** | Hard real-time work; never rebuild |
+| Motion control on the chip | **Reuse GRBL** | Hard real-time work; never rebuild |
+| Who owns the serial port | **The backend, not the browser** | A tab cannot open a COM port; the server runs on the same PC and can |
 
 We do **not** ship on FlatCAM — it targets copper isolation milling (offset
 toolpaths), while we draw trace centerlines with a pen, which is simpler. We
@@ -44,7 +45,10 @@ labExam.kicad_pcb
       │  pcb_gcode_preview.py   (visual sanity check — no hardware)
       ▼
    labExam_toolpath.png
-      │  GRBL / FluidNC (ESP32) over USB or WiFi
+      │  the web app: server.py -> job.py -> grbl/ -> USB serial
+      │  (or the CLI: pcb_send.py)
+      ▼
+   Arduino running GRBL 1.1
       ▼
    physical plot
 
@@ -93,8 +97,12 @@ what `grbl_servo_z` tests (`z_steps < 0`), and every Z move is a timed `G1` at
 - `python main.py` runs all; `python main.py --skip-preview` skips the two
   matplotlib image steps.
 
-### `pcb_send.py` — serial G-code streamer ✅ working
-- Streams a `.gcode` file to GRBL / FluidNC over USB serial using the standard
+### `pcb_send.py` — serial G-code streamer (CLI only) ✅ working
+- **Not imported by the API.** The web app has its own serial path — see
+  `grbl/`, `machine.py` and `job.py` below — which is flow-controlled rather
+  than send-and-wait, and which the UI drives. This stays as a standalone CLI
+  for streaming a file with no server and no browser.
+- Streams a `.gcode` file to GRBL over USB serial using the standard
   send-response (`ok`) handshake; reports any `error:N` replies.
 - `--check` toggles firmware **Check Mode** (`$C`): validate every line with no
   motion. `--dry-run` parses the file without opening a port (no pyserial/HW
@@ -103,6 +111,39 @@ what `grbl_servo_z` tests (`z_steps < 0`), and every Z move is a timed `G1` at
 - **Verified (software paths):** dry-run, missing file, missing port, bad port
   all handled. Serial streaming itself needs real hardware to exercise.
 - Requires `pyserial` (only when actually connecting).
+
+### `grbl/` — the GRBL 1.1 stack ✅ working
+- `protocol.py` — the codec: status reports, replies, realtime bytes. Pure
+  functions, no I/O.
+- `streamer.py` — the thread that owns the transport, with character-counting
+  flow control: it tracks how many bytes of unacknowledged line are in the
+  controller's RX buffer and never oversends. Takes a `Transport` protocol
+  rather than a pyserial object, so the simulator substitutes with no mocking.
+- `ports.py` — port enumeration, VID→chip names ("COM5 — CH340"). `autoselect`
+  returns a port only when exactly one candidate exists: guessing between two
+  plausible boards is worse than asking, and the wrong guess moves a machine.
+- `state.py`, `limits.py` — the machine state model and travel envelope.
+- `profile.py` — the machine's fixed characteristics, a frozen dataclass.
+- `sim.py` — a model of a GRBL 1.1 controller, including its RX buffer and
+  planner queue. Not a stub: it withholds `ok` under backpressure and asserts
+  if the host oversends, which is the only way to prove the flow control is
+  correct rather than accidentally working. `TRACEWORKS_SIM=1` exposes it as a
+  port named `SIM`.
+
+### `machine.py` — the one connection ✅ working
+- A module-level `Session` singleton, not a per-account object: there is one
+  physical plotter on the PC running this server.
+- Owns the port, the streamer thread, and the current job; tracks whether the
+  position is *certain* and refuses moves that depend on it when it is not
+  (after a soft reset, or a jog the controller bounced).
+
+### `job.py` — streaming one file ✅ working
+- Feeds a board's G-code through the streamer, counting `sent` and `acked`
+  separately and claiming neither is the pen's position — GRBL answers `ok`
+  when it has parsed and queued a line, not when it has drawn it.
+- Pause feed-holds as well as stopping the feed; stop drops the rest of the
+  file and releases the hold so the controller drains and returns to Idle,
+  keeping work zero. `check=True` brackets the job with `$C`.
 
 ---
 
@@ -121,8 +162,8 @@ G0 X0 Y0         ; return home
 M2               ; end
 ```
 
-Compatible with GRBL and FluidNC. FluidNC (ESP32) also gives a **WiFi web UI**
-to stream the file — the "web app" side of the vision.
+Compatible with GRBL 1.1. The web app streams it over the USB cable itself —
+see `grbl/`, `machine.py` and `job.py` above.
 
 ---
 
@@ -137,15 +178,16 @@ to stream the file — the "web app" side of the vision.
       pen-down stroke (fewer pen lifts, cleaner lines).
 
 **Later**
-- [ ] Web UI: upload `.kicad_pcb`, preview toolpath in browser, download G-code
-      or push to FluidNC over WiFi.
+- [x] Web UI: upload `.kicad_pcb`, preview the toolpath in the browser,
+      download the G-code, and plot it over USB. Done — `../userpage`.
 - [ ] Pad/footprint rendering so traces visibly connect to component pads.
 - [ ] Two-sided support (plot F.Cu and B.Cu with a flip/registration step).
 - [ ] Configurable machine profiles (bed size, pen offset, feed presets).
 
 **Validation to do**
 - [ ] Compare our G-code against FlatCAM output on the same board.
-- [ ] `pcb_send.py --check` against real FluidNC firmware (Check Mode, no motion).
+- [ ] `POST /machine/run` with `check: true` against real GRBL firmware
+      (Check Mode, no motion). Green against the simulator.
 - [ ] Dry-run on real hardware (pen up, no contact) to check registration.
 
 ### Recommended validation order before a real plot
