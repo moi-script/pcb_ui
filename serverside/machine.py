@@ -17,6 +17,7 @@ from grbl.profile import DEFAULT_PROFILE, Profile
 from grbl.protocol import Realtime
 from grbl.state import MachineState
 from grbl.streamer import ReplyEvent, Streamer, Transport
+from job import Job
 
 BANNER_TIMEOUT = 3.0
 
@@ -185,6 +186,7 @@ class Session:
         self.profile = DEFAULT_PROFILE
         self.state = MachineState(self.profile)
         self.streamer: Streamer | None = None
+        self.job: Job | None = None
 
         # `_planned` tracks the end of the last jog we validated and sent —
         # the planner's queued target, not the live reported position. Jogs
@@ -225,6 +227,26 @@ class Session:
             raise HTTPException(409, "Machine is not connected.")
         return self.streamer
 
+    def start_job(self, lines: list[str], check: bool, name: str) -> Job:
+        """Begin streaming a file. One at a time, deliberately.
+
+        Two concurrent jobs on one machine is not a feature with a sensible
+        meaning — it is two files interleaved into one nonsense toolpath.
+        """
+        streamer = self.require()
+        if self.job is not None and self.job.state in ("running", "paused"):
+            raise HTTPException(409, "A job is already running.")
+        job = Job(lines, streamer, check=check, name=name)
+        self.job = job
+        self.state.job_source = job.snapshot
+        job.start()
+        return job
+
+    def require_job(self) -> Job:
+        if self.job is None:
+            raise HTTPException(409, "No job is running.")
+        return self.job
+
     def _on_streamer_event(self, event: object) -> None:
         """MachineState.apply(), plus an immediate taint on alarm/error.
 
@@ -260,6 +282,11 @@ class Session:
         the rare line that legitimately errors, in exchange for never
         leaving a target on the books for a move the controller refused.
         """
+        # The job first: it counts acknowledgements, and an `ok` it does not
+        # see is a line of progress the operator never gets back.
+        job = self.job
+        if job is not None:
+            job.on_streamer_event(event)
         self.state.apply(event)
         if isinstance(event, ReplyEvent) and event.reply.kind in ("alarm", "error"):
             self.taint_planned()
@@ -267,6 +294,8 @@ class Session:
     def connect(self, transport: Transport, port: str, baud: int) -> str:
         self.disconnect()
         self.state = MachineState(self.profile)
+        self.job = None
+        self.state.job_source = None
 
         streamer = Streamer(
             transport,
@@ -309,6 +338,11 @@ class Session:
         return self.state.firmware
 
     def disconnect(self) -> None:
+        # A pulled cable must not leave a job reading "running" forever: the
+        # progress bar would sit still and say nothing about why.
+        if self.job is not None and self.job.state in ("running", "paused"):
+            self.job.state = "error"
+            self.job.error = "disconnected"
         if self.streamer is not None:
             self.streamer.stop()
             try:

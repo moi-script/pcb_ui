@@ -32,6 +32,12 @@ DEFAULT_SETTINGS: dict[int, str] = {
 
 AXES = ("X", "Y", "Z")
 
+# Word letters GRBL 1.1 understands on a block. Anything else draws
+# `error:20` ("Unsupported or invalid g-code command"). Modelled because
+# check mode ($C) exists precisely to find these before the pen is down, and
+# a simulator that accepts every letter cannot demonstrate that it works.
+SUPPORTED_WORDS = set("GMNXYZIJKRFSTPL")
+
 
 class _Block:
     """One queued motion block."""
@@ -58,6 +64,10 @@ class GrblSim:
         self.wco: list[float] = [0.0, 0.0, 0.0]
         self.state = "Idle"
         self.feed = 0.0
+        # $C is a toggle, not a flag, and leaking it on makes the next file
+        # silently validate instead of plotting. Modelled as state so a test
+        # can assert it was turned back off.
+        self.check_mode = False
 
         self._out: list[str] = []
         self._partial = ""
@@ -165,6 +175,12 @@ class GrblSim:
 
         upper = line.upper()
 
+        if upper == "$C":
+            self.check_mode = not self.check_mode
+            self._emit("[Enabled]" if self.check_mode else "[Disabled]")
+            self._reply("ok", cost)
+            return
+
         if upper == "$X":
             self.state = "Idle"
             self._reply("ok", cost)
@@ -192,6 +208,18 @@ class GrblSim:
             self._reply("error:9", cost)
             return
 
+        bad = self._unsupported_word(upper)
+        if bad is not None:
+            self._reply("error:20", cost)
+            return
+
+        if self.check_mode and not upper.startswith("$"):
+            # Check mode parses and validates every line and replies `ok`,
+            # but queues no motion: the point is to find a bad file without
+            # moving anything.
+            self._reply("ok", cost)
+            return
+
         if upper.startswith("$J="):
             self._motion(upper[3:], cost, jog=True)
             return
@@ -213,6 +241,20 @@ class GrblSim:
             return
 
         self._reply("ok", cost)
+
+    @staticmethod
+    def _unsupported_word(line: str) -> str | None:
+        """The first word letter GRBL would refuse, or None.
+
+        Only applied to plain blocks: `$` commands have their own grammar,
+        and comments are stripped by the host before anything gets here.
+        """
+        if line.startswith("$") or line.startswith("("):
+            return None
+        for ch in line:
+            if ch.isalpha() and ch.upper() not in SUPPORTED_WORDS:
+                return ch.upper()
+        return None
 
     @staticmethod
     def _word(line: str, letter: str) -> float | None:
@@ -265,9 +307,17 @@ class GrblSim:
                 self._emit("ALARM:2")
                 return
 
-        if len(self._queue) >= self.planner_blocks:
-            # Planner full: the line stays in the RX buffer, un-acknowledged.
-            # This is the backpressure the host's flow control must respect.
+        # Real GRBL acknowledges strictly in the order it parses, because a
+        # full planner stops it parsing at all — the next line simply sits in
+        # the RX buffer. Once ANY block here is un-acknowledged, every later
+        # one must be too: acknowledging a later line first would credit the
+        # host's FIFO byte accounting with the wrong line's cost, and the
+        # drift compounds until the host oversends a buffer it believes has
+        # room. (Found by test_the_rx_budget_is_never_oversent.)
+        withheld = any(not b.acked for b in self._queue)
+        if withheld or len(self._queue) >= self.planner_blocks:
+            # The line stays in the RX buffer, un-acknowledged. This is the
+            # backpressure the host's flow control must respect.
             self._queue.append(_Block(target, self.feed or 1000.0, cost))
             self.state = "Jog" if jog else "Run"
             return

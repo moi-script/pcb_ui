@@ -56,3 +56,13 @@ def test_connect_to_a_missing_port_is_a_502(client):
     r = client.post("/machine/connect", json={"port": "COM_NOPE", "baud": 115200})
     assert r.status_code == 502
     assert "COM_NOPE" in r.json()["detail"]
+
+
+def test_run_without_a_connection_is_409(client):
+    r = client.post("/machine/run", json={"board_id": "0" * 24, "check": False})
+    assert r.status_code == 409
+
+
+def test_pause_without_a_job_is_409(client):
+    client.post("/machine/connect", json={"port": "SIM", "baud": 115200})
+    assert client.post("/machine/pause").status_code == 409

@@ -30,6 +30,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from dataclasses import dataclass
+from typing import Callable
 
 from grbl.protocol import resolve_positions
 from grbl.streamer import (
@@ -56,6 +57,11 @@ class MachineState:
     def __init__(self, profile: Profile) -> None:
         self.profile = profile
         self._lock = threading.RLock()
+
+        # Filled in by machine.Session with the live job's snapshot function.
+        # A callable rather than the Job itself: MachineState sits below the
+        # job in the stack and must not import it.
+        self.job_source: Callable[[], dict | None] | None = None
 
         self.connected = False
         self.port: str | None = None
@@ -222,7 +228,7 @@ class MachineState:
                 "pen": self._pen(),
                 "alarm": self.alarm,
                 "error": self.error,
-                "job": None,  # file streaming arrives in the next slice
+                "job": self.job_source() if self.job_source else None,
                 "seq": self._seq,
                 # Both are safety bookkeeping for server/main.py's jog
                 # gating, included here (rather than exposed as separate

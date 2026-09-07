@@ -110,6 +110,19 @@ class Streamer:
         with self._lock:
             return not self._pending and not self._outbox
 
+    def clear_outbox(self) -> int:
+        """Drop every line accepted but not yet written. Returns how many.
+
+        Lines already written are the controller's business and cannot be
+        recalled — that is what a feed hold or a soft reset is for. This
+        covers the rest of the file, which is otherwise still on its way out
+        after the operator pressed Stop.
+        """
+        with self._lock:
+            dropped = len(self._outbox)
+            self._outbox.clear()
+            return dropped
+
     def send_realtime(self, byte: bytes) -> None:
         """Send a single realtime byte.
 

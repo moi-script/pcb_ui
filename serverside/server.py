@@ -45,6 +45,7 @@ import db
 from grbl import ports as grbl_ports
 from grbl.limits import AXIS_INDEX, LimitError
 from grbl.protocol import Realtime, encode_jog, encode_zero
+from job import load_lines
 from machine import SIM_PORT, PositionUncertain, make_transport, session
 from pcb_gcode import CONFIG, generate_gcode, optimize_order, travel_distance
 from pcb_read import extract_wiring, layer_usage
@@ -373,6 +374,11 @@ class ZeroRequest(BaseModel):
 
 class CommandRequest(BaseModel):
     line: str
+
+
+class RunRequest(BaseModel):
+    board_id: str
+    check: bool = False
 
 
 # --------------------------------------------------------------- ESP32 bridge
@@ -993,6 +999,56 @@ def machine_estop() -> dict:
     # settle() path once a status report proves the machine is Idle with
     # nothing of ours outstanding.
     session.taint_planned()
+    return {"ok": True}
+
+
+@app.post("/machine/run")
+def machine_run(body: RunRequest):
+    """Stream a stored board's G-code to the connected machine.
+
+    `check` brackets the job with GRBL's $C: every line is parsed and
+    validated, no motor moves. It is the cheapest way to find out the file
+    is acceptable before it is also expensive to be wrong about.
+    """
+    # The connection is checked before the board is looked up: "no machine
+    # is connected" is the answer the operator can act on, and it should not
+    # depend on whether the board id also happened to be good.
+    session.require()
+
+    try:
+        oid = ObjectId(body.board_id)
+    except InvalidId:
+        raise HTTPException(404, "Board not found.")
+    board = db.boards.find_one({"_id": oid})
+    if not board:
+        raise HTTPException(404, "Board not found.")
+    gcode = board.get("gcode")
+    if not gcode:
+        raise HTTPException(400, "This board has no G-code to send.")
+
+    lines = load_lines(gcode)
+    if not lines:
+        raise HTTPException(400, "This board's G-code has no instructions.")
+
+    job = session.start_job(lines, body.check, board.get("name", "board"))
+    return {"ok": True, "total": len(lines), "check": job.check}
+
+
+@app.post("/machine/pause")
+def machine_pause():
+    session.require_job().pause()
+    return {"ok": True}
+
+
+@app.post("/machine/resume")
+def machine_resume():
+    session.require_job().resume()
+    return {"ok": True}
+
+
+@app.post("/machine/stop")
+def machine_stop():
+    session.require_job().stop()
     return {"ok": True}
 
 
