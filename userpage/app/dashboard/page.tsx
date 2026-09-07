@@ -5,6 +5,7 @@ import Link from "next/link";
 import PcbBoard from "@/components/PcbBoard";
 import { useAuth } from "@/lib/auth";
 import { api, type Board } from "@/lib/api";
+import { useMachine } from "@/lib/machine";
 
 const statusColor: Record<string, string> = {
   plotted: "text-signal",
@@ -15,6 +16,7 @@ const statusColor: Record<string, string> = {
 
 export default function Overview() {
   const { session } = useAuth();
+  const { snap, connected } = useMachine();
   const [boards, setBoards] = useState<Board[]>([]);
   const [featured, setFeatured] = useState<Board | null>(null);
   const [loading, setLoading] = useState(true);
@@ -39,7 +41,6 @@ export default function Overview() {
     };
   }, [session]);
 
-  const device = session?.device;
   const totalTracks = boards.reduce((a, b) => a + b.fcu + b.bcu, 0);
   const before = boards.reduce((a, b) => a + b.penUpBefore, 0);
   const after = boards.reduce((a, b) => a + b.penUpAfter, 0);
@@ -61,7 +62,12 @@ export default function Overview() {
 
       {/* stat strip */}
       <div className="mt-6 grid gap-px overflow-hidden rounded border border-line bg-line sm:grid-cols-4">
-        <StatCell k="Paired device" v={device?.id ?? "—"} sub={device?.alias ?? ""} accent />
+        <StatCell
+          k="Machine"
+          v={connected ? snap?.conn.port ?? "—" : "not connected"}
+          sub={connected ? snap?.state ?? "" : "connect over USB"}
+          accent
+        />
         <StatCell k="Boards" v={String(boards.length)} sub="routed & saved" />
         <StatCell k="Tracks routed" v={String(totalTracks)} sub="across boards" />
         <StatCell k="Travel saved" v={`${saved}%`} sub="less pen-up" />
@@ -169,21 +175,42 @@ export default function Overview() {
             </div>
           )}
 
-          {device && (
-            <div className="panel p-5">
-              <span className="tlabel">Machine profile</span>
-              <dl className="mt-3 space-y-2 font-mono text-xs">
-                <PRow k="controller" v={device.controller} />
-                <PRow k="firmware" v={device.firmware} />
-                <PRow k="bed" v={`${device.bed} mm`} />
-                <PRow k="pen up / down" v={`Z${device.penUpZ} / Z${device.penDownZ}`} />
-                <PRow
-                  k="feeds"
-                  v={`travel ${device.travelFeed} · draw ${device.drawFeed}`}
-                />
-              </dl>
-            </div>
-          )}
+          <div className="panel p-5">
+            <span className="tlabel">Machine</span>
+            {connected && snap ? (
+              <>
+                <dl className="mt-3 space-y-2 font-mono text-xs">
+                  <PRow k="port" v={`${snap.conn.port} · ${snap.conn.baud}`} />
+                  <PRow k="firmware" v={snap.conn.firmware} />
+                  <PRow k="state" v={snap.state} />
+                  <PRow
+                    k="work position"
+                    v={snap.wpos.map((n) => n.toFixed(2)).join("  ")}
+                  />
+                  <PRow
+                    k="travel"
+                    v={`${snap.conn.travel.join(" × ")} mm`}
+                  />
+                </dl>
+                <Link
+                  href="/dashboard/device"
+                  className="btn btn-ghost mt-4 w-full"
+                >
+                  Open machine controls →
+                </Link>
+              </>
+            ) : (
+              <>
+                <p className="mt-3 text-sm text-muted">
+                  Nothing connected. Plug the controller into this PC over USB
+                  and pick its port.
+                </p>
+                <Link href="/connect" className="btn btn-copper mt-4 w-full">
+                  Connect a machine →
+                </Link>
+              </>
+            )}
+          </div>
         </section>
       </div>
     </div>

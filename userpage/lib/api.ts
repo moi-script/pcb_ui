@@ -6,20 +6,6 @@ export const API_URL =
 
 export type User = { name: string; email: string };
 
-export type Device = {
-  id: string;
-  alias: string;
-  firmware: string;
-  controller: string;
-  connection: string;
-  port: string;
-  bed: string;
-  penUpZ: number;
-  penDownZ: number;
-  travelFeed: number;
-  drawFeed: number;
-};
-
 export type Track = {
   net: string;
   x1: number;
@@ -83,21 +69,64 @@ export type TraceInfo = {
   warnings: string[];
 };
 
-export type PrintStart = { ok: boolean; total: number; check: boolean };
+export type PortInfo = {
+  device: string;
+  description: string;
+  chip: string | null;
+  likely_controller: boolean;
+};
 
-export type PrintState =
-  | "idle"
-  | "checking"
-  | "printing"
-  | "done"
-  | "error"
-  | "stopped";
+export type PortList = {
+  ports: PortInfo[];
+  /** Filled only when exactly one candidate was found — never a guess. */
+  suggested: string | null;
+  bauds: number[];
+};
 
-export type PrintStatus = {
-  state: PrintState;
-  line: number;
+export type JobState =
+  | "idle" | "running" | "paused" | "done" | "error" | "stopped";
+
+export type JobSnapshot = {
+  name: string;
+  state: JobState;
+  /** Lines handed to the controller. Runs ahead of the pen. */
+  sent: number;
+  /** Lines the controller has parsed and queued. Also ahead of the pen. */
+  acked: number;
   total: number;
-  error?: string;
+  check: boolean;
+  error: string | null;
+  errorLine: number | null;
+};
+
+export type MachineSnapshot = {
+  conn: {
+    connected: boolean;
+    port: string | null;
+    baud: number;
+    firmware: string;
+    profile: string;
+    penMode: string;
+    travel: [number, number, number];
+  };
+  state: string;
+  mpos: [number, number, number];
+  wpos: [number, number, number];
+  wco: [number, number, number];
+  feed: number;
+  spindle: number;
+  pen: string;
+  alarm: string | null;
+  error: string | null;
+  job: JobSnapshot | null;
+  seq: number;
+};
+
+export type ConsoleLine = {
+  direction: string;
+  text: string;
+  kind: string;
+  seq: number;
 };
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -133,21 +162,6 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
 
-  getDevice: (email: string) =>
-    req<Device | null>(`/devices/${encodeURIComponent(email)}`),
-
-  pairDevice: (email: string, deviceId: string) =>
-    req<Device>("/devices/pair", {
-      method: "POST",
-      body: JSON.stringify({ email, device_id: deviceId }),
-    }),
-
-  unpair: (email: string) =>
-    req<{ ok: boolean }>("/devices/unpair", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    }),
-
   listBoards: (email: string) =>
     req<Board[]>(`/boards/${encodeURIComponent(email)}`),
 
@@ -159,30 +173,64 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
 
-  renameDevice: (email: string, alias: string) =>
-    req<Device>(`/devices/${encodeURIComponent(email)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ alias }),
-    }),
-
   deleteBoard: (id: string) =>
     req<{ ok: boolean }>(`/board/${id}`, { method: "DELETE" }),
 
-  // --- print streaming (backend relays to the ESP32 bridge) ---
-  startPrint: (email: string, boardId: string, check: boolean) =>
-    req<PrintStart>("/print", {
+  // --- machine (USB serial, owned by the backend on this same PC) ---
+  machinePorts: () => req<PortList>("/machine/ports"),
+
+  machineConnect: (port: string, baud: number, email?: string) =>
+    req<{ ok: boolean; firmware: string }>("/machine/connect", {
       method: "POST",
-      body: JSON.stringify({ email, board_id: boardId, check }),
+      body: JSON.stringify({ port, baud, email }),
     }),
 
-  printStatus: (email: string) =>
-    req<PrintStatus>(`/print/status/${encodeURIComponent(email)}`),
+  machineDisconnect: () =>
+    req<{ ok: boolean }>("/machine/disconnect", { method: "POST" }),
 
-  stopPrint: (email: string) =>
-    req<{ ok: boolean }>("/print/stop", {
+  machineState: () => req<MachineSnapshot>("/machine/state"),
+
+  machineLast: (email: string) =>
+    req<{ port: string; baud: number } | null>(
+      `/machine/last?email=${encodeURIComponent(email)}`
+    ),
+
+  jog: (axis: string, distance: number, feed = 1000) =>
+    req<{ ok: boolean }>("/machine/jog", {
       method: "POST",
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ axis, distance, feed }),
     }),
+
+  jogCancel: () =>
+    req<{ ok: boolean }>("/machine/jog/cancel", { method: "POST" }),
+
+  home: () => req<{ ok: boolean }>("/machine/home", { method: "POST" }),
+
+  unlock: () => req<{ ok: boolean }>("/machine/unlock", { method: "POST" }),
+
+  zero: (axes: string) =>
+    req<{ ok: boolean }>("/machine/zero", {
+      method: "POST",
+      body: JSON.stringify({ axes }),
+    }),
+
+  command: (line: string) =>
+    req<{ ok: boolean }>("/machine/command", {
+      method: "POST",
+      body: JSON.stringify({ line }),
+    }),
+
+  estop: () => req<{ ok: boolean }>("/machine/estop", { method: "POST" }),
+
+  run: (boardId: string, check: boolean) =>
+    req<{ ok: boolean; total: number; check: boolean }>("/machine/run", {
+      method: "POST",
+      body: JSON.stringify({ board_id: boardId, check }),
+    }),
+
+  pauseJob: () => req<{ ok: boolean }>("/machine/pause", { method: "POST" }),
+  resumeJob: () => req<{ ok: boolean }>("/machine/resume", { method: "POST" }),
+  stopJob: () => req<{ ok: boolean }>("/machine/stop", { method: "POST" }),
 
   // multipart upload -> route -> stored board
   async route(file: File, email: string): Promise<Board> {

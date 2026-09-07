@@ -7,20 +7,25 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, type Device } from "./api";
+import { api } from "./api";
 
 /*
   Session backed by the Python API + MongoDB.
 
-  Accounts, paired devices, and boards all live in Mongo now. We keep a light
-  session (name, email, and the paired device) in localStorage so the browser
-  remembers who's signed in; every mutation goes through the API.
+  Accounts and boards live in Mongo. We keep a light session (name, email) in
+  localStorage so the browser remembers who's signed in; every mutation goes
+  through the API.
+
+  There is deliberately no machine in here. The plotter is a USB cable
+  plugged into the PC running the backend, not a possession of an account:
+  it is connected on /connect and its live state comes from useMachine().
+  Hanging it off the session would mean an account could "have" a machine
+  that is not physically there.
 */
 
 export type Session = {
   name: string;
   email: string;
-  device: Device | null;
 };
 
 type Result = { ok: boolean; error?: string };
@@ -30,17 +35,11 @@ type AuthCtx = {
   ready: boolean;
   signUp: (name: string, email: string, password: string) => Promise<Result>;
   signIn: (email: string, password: string) => Promise<Result>;
-  pairDevice: (deviceId: string) => Promise<Result>;
-  renameDevice: (alias: string) => Promise<Result>;
-  unpair: () => Promise<Result>;
   signOut: () => void;
 };
 
 const Ctx = createContext<AuthCtx | null>(null);
 const KEY = "traceworks.session";
-
-// Suggested demo ID (any non-empty ID pairs; this just pre-fills the field).
-export const DEMO_DEVICE_ID = "TW-3F9A-C210";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -75,45 +74,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signUp: (name, email, password) =>
       wrap(async () => {
         const user = await api.signup(name, email, password);
-        persist({ name: user.name, email: user.email, device: null });
+        persist({ name: user.name, email: user.email });
       }),
 
     signIn: (email, password) =>
       wrap(async () => {
         const user = await api.login(email, password);
-        const device = await api.getDevice(user.email);
-        persist({ name: user.name, email: user.email, device });
-      }),
-
-    pairDevice: (deviceId) =>
-      wrap(async () => {
-        // pairing straight from the landing page, before an account exists,
-        // creates a lightweight guest account first.
-        let s = session;
-        if (!s) {
-          const guest = await api.signup(
-            "Guest",
-            `guest+${Date.now()}@traceworks.dev`,
-            crypto.randomUUID()
-          );
-          s = { name: guest.name, email: guest.email, device: null };
-        }
-        const device = await api.pairDevice(s.email, deviceId);
-        persist({ ...s, device });
-      }),
-
-    renameDevice: (alias) =>
-      wrap(async () => {
-        if (!session?.device) return;
-        const device = await api.renameDevice(session.email, alias);
-        persist({ ...session, device });
-      }),
-
-    unpair: () =>
-      wrap(async () => {
-        if (!session) return;
-        await api.unpair(session.email);
-        persist({ ...session, device: null });
+        persist({ name: user.name, email: user.email });
       }),
 
     signOut: () => persist(null),

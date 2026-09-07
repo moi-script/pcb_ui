@@ -5,11 +5,12 @@ import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import Logo from "@/components/Logo";
 import { useAuth } from "@/lib/auth";
+import { useMachine } from "@/lib/machine";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: OverviewIcon },
   { href: "/dashboard/projects", label: "Boards", icon: BoardIcon },
-  { href: "/dashboard/device", label: "Device", icon: DeviceIcon },
+  { href: "/dashboard/device", label: "Machine", icon: DeviceIcon },
 ];
 
 export default function DashboardLayout({
@@ -18,24 +19,26 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const { session, ready, signOut } = useAuth();
+  const { snap, connected, live } = useMachine();
   const router = useRouter();
   const pathname = usePathname();
 
+  // Signed in is the only gate. The dashboard used to also demand a paired
+  // device, which made sense when a machine was a property of the account;
+  // now it is a USB cable, and looking at your boards should not require one
+  // to be plugged in.
   useEffect(() => {
     if (!ready) return;
     if (!session) router.replace("/login");
-    else if (!session.device) router.replace("/connect");
   }, [ready, session, router]);
 
-  if (!ready || !session || !session.device) {
+  if (!ready || !session) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-paper">
         <span className="tlabel animate-pulse">loading workbench…</span>
       </div>
     );
   }
-
-  const device = session.device;
 
   return (
     <div className="flex min-h-screen bg-paper">
@@ -70,15 +73,30 @@ export default function DashboardLayout({
           })}
         </nav>
 
-        {/* paired device card */}
+        {/* machine card */}
         <div className="border-t border-line p-3">
           <Link
-            href="/dashboard/device"
+            href={connected ? "/dashboard/device" : "/connect"}
             className="block rounded border border-line bg-panel-2 p-3 hover:border-line-strong"
           >
-            <span className="tlabel">paired device</span>
-            <p className="mt-1.5 truncate text-sm text-ink">{device.alias}</p>
-            <p className="font-mono text-[0.7rem] text-faint">{device.id}</p>
+            <span className="tlabel">machine</span>
+            {connected ? (
+              <>
+                <p className="mt-1.5 truncate text-sm text-ink">
+                  {snap?.conn.port} · {snap?.state}
+                </p>
+                <p className="truncate font-mono text-[0.7rem] text-faint">
+                  {snap?.conn.firmware}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="mt-1.5 text-sm text-muted">not connected</p>
+                <p className="font-mono text-[0.7rem] text-copper">
+                  connect a machine →
+                </p>
+              </>
+            )}
           </Link>
         </div>
       </aside>
@@ -97,7 +115,15 @@ export default function DashboardLayout({
           </div>
           <div className="flex items-center gap-4">
             <span className="hidden items-center gap-2 font-mono text-xs text-muted sm:flex">
-              {device.connection} · {device.port}
+              {/* Two separate facts, deliberately not merged: whether this
+                  browser is talking to the server, and whether the server is
+                  talking to the machine. */}
+              <span className={`dot ${live ? "dot-live" : ""}`} />
+              {connected
+                ? `${snap?.conn.port} · ${snap?.state}`
+                : live
+                ? "no machine"
+                : "server offline"}
             </span>
             <button
               onClick={() => {
