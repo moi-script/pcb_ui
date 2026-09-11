@@ -97,6 +97,16 @@ export type JobSnapshot = {
   check: boolean;
   error: string | null;
   errorLine: number | null;
+  /** Seconds since the job started; frozen once it ends. Null before it does. */
+  elapsed: number | null;
+  /**
+   * Seconds left, straight-line from the rate so far. Null unless running.
+   * Wanders during a board — rapids fly, fine detail crawls — and settles as
+   * it goes. An estimate, and nothing decides anything on it.
+   */
+  eta: number | null;
+  /** The G-code line at the front of the controller's queue. */
+  line: string;
 };
 
 export type MachineSnapshot = {
@@ -231,6 +241,15 @@ export const api = {
   pauseJob: () => req<{ ok: boolean }>("/machine/pause", { method: "POST" }),
   resumeJob: () => req<{ ok: boolean }>("/machine/resume", { method: "POST" }),
   stopJob: () => req<{ ok: boolean }>("/machine/stop", { method: "POST" }),
+  /**
+   * Stop and run the same file again from line 1. Takes a moment: the
+   * server waits for the machine to come to rest and lifts the pen before
+   * it starts over. Work zero is kept.
+   */
+  restartJob: () =>
+    req<{ ok: boolean; total: number; check: boolean }>("/machine/restart", {
+      method: "POST",
+    }),
 
   // multipart upload -> route -> stored board
   async route(file: File, email: string): Promise<Board> {

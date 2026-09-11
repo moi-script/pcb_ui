@@ -7,6 +7,7 @@ import Link from "next/link";
 import PcbBoard from "@/components/PcbBoard";
 import InlineEdit from "@/components/InlineEdit";
 import RetracePanel from "@/components/RetracePanel";
+import MachineConsole from "@/components/MachineConsole";
 import { useAuth } from "@/lib/auth";
 import { api, type Board } from "@/lib/api";
 import { useMachine } from "@/lib/machine";
@@ -31,8 +32,10 @@ export default function ProjectDetail() {
   const [armed, setArmed] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const [front, setFront] = useState(true);
-  const [back, setBack] = useState(true);
+  // One copper layer, so one toggle. Double-sided boards are refused at
+  // upload, so there is never a second layer to show or hide — a B.Cu
+  // control could only ever be a switch with nothing behind it.
+  const [copper, setCopper] = useState(true);
   const [toolpath, setToolpath] = useState(false);
   const [replay, setReplay] = useState(0);
 
@@ -152,28 +155,23 @@ export default function ProjectDetail() {
         </div>
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[1.5fr_1fr]">
+      {/* The page runs in the order the work does: check the board, watch
+          the toolpath, plot it, then watch the wire. Each stage is a real
+          step with a real decision in it, which is why they are numbered. */}
+      <Stage n="1" title="Board" hint="what was routed from your file">
+      <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
         {/* preview */}
         <section className="panel ticked">
           <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
             <span className="tlabel mr-auto">Preview</span>
             {!traced && (
-              <>
-                <Toggle
-                  on={front}
-                  onClick={() => setFront((v) => !v)}
-                  color="fcu"
-                >
-                  F.Cu
-                </Toggle>
-                <Toggle
-                  on={back}
-                  onClick={() => setBack((v) => !v)}
-                  color="bcu"
-                >
-                  B.Cu
-                </Toggle>
-              </>
+              <Toggle
+                on={copper}
+                onClick={() => setCopper((v) => !v)}
+                color="fcu"
+              >
+                {board.layer}
+              </Toggle>
             )}
             <Toggle
               on={toolpath}
@@ -192,13 +190,13 @@ export default function ProjectDetail() {
           </div>
           <div className="panel-2 aspect-[16/10] p-5">
             <PcbBoard
-              key={`${front}${back}${toolpath}${replay}`}
+              key={`${copper}${toolpath}${replay}`}
               tracks={board.tracks}
               strokes={board.strokes}
               width={board.width}
               height={board.height}
-              showFront={front}
-              showBack={back}
+              showFront={copper}
+              showBack={copper}
               toolpath={toolpath}
               animate
               className="h-full w-full"
@@ -217,10 +215,7 @@ export default function ProjectDetail() {
                 }
               />
             ) : (
-              <>
-                <Legend color="var(--color-fcu)" label="F.Cu draw" />
-                <Legend color="var(--color-bcu)" label="B.Cu draw" />
-              </>
+              <Legend color="var(--color-fcu)" label={`${board.layer} draw`} />
             )}
             <Legend color="var(--color-faint)" label="pen-up travel" dashed />
           </div>
@@ -262,6 +257,8 @@ export default function ProjectDetail() {
               <Metric k="G-code lines" v={String(board.gcodeLines)} />
               <Metric k="Est. time" v={`~${board.estMinutes} min`} />
             </dl>
+
+            <BedFit width={board.width} height={board.height} />
 
             {traced && !!board.traceInfo?.warnings.length && (
               <ul className="mt-4 space-y-1 border-t border-line pt-4 text-xs text-warn">
@@ -306,29 +303,49 @@ export default function ProjectDetail() {
             />
           )}
 
-          <PlotControl
-            boardId={board.id}
-            boardName={board.name}
-            gcodeLines={board.gcodeLines}
-          />
         </section>
       </div>
+      </Stage>
 
-      {/* toolpath simulation — reads the real G-code, not the stored geometry */}
-      {board.gcode && (
-        <section className="panel ticked mt-6">
-          <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-            <span className="tlabel">Toolpath simulation</span>
-            <span className="font-mono text-xs text-faint">
-              what the machine will actually run
-            </span>
+      {/* The toolpath and the button that runs it share one screen on
+          purpose: you press Plot and watch the same view, instead of
+          scrolling between the thing you are watching and the thing you are
+          holding. The controls stay put while the toolpath scrolls. */}
+      <Stage
+        n="2"
+        title="Validate and plot"
+        hint="a simulation until a job runs, then the machine itself"
+      >
+        <div className="grid items-start gap-6 lg:grid-cols-[1.5fr_1fr]">
+          {board.gcode ? (
+            <LiveVisualizer gcode={board.gcode} boardName={board.name} />
+          ) : (
+            <div className="panel ticked flex h-64 items-center justify-center px-6 text-center text-sm text-muted">
+              This board has no G-code to plot. Re-route it from the file, or
+              trace it again.
+            </div>
+          )}
+          <div className="lg:sticky lg:top-20">
+            <PlotControl
+              boardId={board.id}
+              boardName={board.name}
+              gcodeLines={board.gcodeLines}
+            />
           </div>
-          <LiveVisualizer gcode={board.gcode} boardName={board.name} />
-        </section>
-      )}
+        </div>
+      </Stage>
+
+      <Stage
+        n="3"
+        title="Console"
+        hint="every line sent, and what the controller answered"
+      >
+        <BoardConsole boardName={board.name} />
+      </Stage>
 
       {/* gcode viewer */}
-      <section className="panel ticked mt-6">
+      <Stage n="4" title="G-code" hint="the file itself, as stored">
+      <section className="panel ticked">
         <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
           <span className="tlabel">
             G-code · {board.filename.replace(/\.kicad_pcb$/, ".gcode")}
@@ -341,6 +358,7 @@ export default function ProjectDetail() {
           {board.gcode}
         </pre>
       </section>
+      </Stage>
     </div>
   );
 }
@@ -384,11 +402,28 @@ function LiveVisualizer({
   const mine = active && job?.name === boardName;
 
   return (
-    <GcodeVisualizer
-      gcode={gcode}
-      liveIndex={mine && job ? job.acked : null}
-      penPos={mine && snap ? snap.wpos : null}
-    />
+    <section className="panel ticked">
+      {/* The heading tells you which of the two things you are looking at.
+          Labelled "simulation" throughout, a live plot reads as an animation
+          and the operator has no way to know the difference matters. */}
+      <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+        <span className="tlabel">
+          {mine ? "Toolpath · live" : "Toolpath simulation"}
+        </span>
+        <span className="font-mono text-xs text-faint">
+          {mine
+            ? `following ${snap?.conn.port} — drawn as the controller accepts each line`
+            : "a preview; what the machine will actually run"}
+        </span>
+      </div>
+
+      <GcodeVisualizer
+        gcode={gcode}
+        liveIndex={mine && job ? job.acked : null}
+        penPos={mine && snap ? snap.wpos : null}
+      />
+
+    </section>
   );
 }
 
@@ -420,6 +455,27 @@ function PlotControl({
   const total = job?.total || gcodeLines;
   const acked = job?.acked ?? 0;
   const pct = total ? Math.round((acked / total) * 100) : 0;
+
+  // What the machine is doing, in words. A bar alone says how far along it
+  // is and nothing about what that means — whether it is validating or
+  // cutting metal, which line it is on, or whether it is stuck.
+  const phase = !job
+    ? ""
+    : job.state === "running"
+    ? job.check
+      ? `Dry-checking on ${snap?.conn.port} — parsing every line, nothing moves`
+      : `Plotting on ${snap?.conn.port} — machine is ${snap?.state ?? "?"}, pen ${snap?.pen ?? "?"}`
+    : job.state === "paused"
+    ? "Held. The controller keeps its queue and its work zero."
+    : job.state === "done"
+    ? job.check
+      ? "Every line parsed cleanly. Turn the dry-check off to plot for real."
+      : "All lines acknowledged. The pen finishes a moment after this."
+    : job.state === "stopped"
+    ? "Stopped. The moves already inside the controller were allowed to drain."
+    : job.state === "error"
+    ? "Failed. Nothing further was sent."
+    : "";
 
   async function guard(fn: () => Promise<unknown>) {
     setErr("");
@@ -524,43 +580,81 @@ function PlotControl({
           <p className="mt-1.5 font-mono text-[0.7rem] text-faint">
             lines the controller has accepted; the pen is a little behind
           </p>
+
+          {phase && <p className="mt-3 text-sm text-ink-soft">{phase}</p>}
+
+          <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 font-mono text-xs">
+            <Fact label="elapsed" value={clock(job.elapsed)} />
+            <Fact
+              label="remaining"
+              value={job.state === "running" ? `~${clock(job.eta)}` : "—"}
+            />
+            <Fact
+              label="pen at"
+              value={
+                snap
+                  ? `X${snap.wpos[0].toFixed(1)} Y${snap.wpos[1].toFixed(
+                      1
+                    )} Z${snap.wpos[2].toFixed(1)}`
+                  : "—"
+              }
+            />
+            <Fact label="feed" value={snap ? `${Math.round(snap.feed)} mm/min` : "—"} />
+          </dl>
+
+          {/* The line at the front of the controller's queue. When a job
+              stalls this is the single most useful thing on the page: it
+              names what it stopped on. */}
+          {job.line && (
+            <p className="mt-2 truncate font-mono text-xs text-copper" title={job.line}>
+              → {job.line}
+            </p>
+          )}
         </div>
       )}
 
       <div className="mt-4">
-        {running ? (
-          <div className="flex gap-1.5">
+        {running || paused ? (
+          <div className="space-y-1.5">
+            <div className="flex gap-1.5">
+              {running ? (
+                <button
+                  className="btn btn-ghost flex-1"
+                  disabled={busy}
+                  onClick={() => guard(() => api.pauseJob())}
+                >
+                  Pause
+                </button>
+              ) : (
+                <button
+                  className="btn btn-copper flex-1"
+                  disabled={busy}
+                  onClick={() => guard(() => api.resumeJob())}
+                >
+                  Resume
+                </button>
+              )}
+              <button
+                className="btn btn-ghost flex-1 !border-danger !text-danger"
+                disabled={busy}
+                onClick={() => guard(() => api.stopJob())}
+              >
+                Stop
+              </button>
+            </div>
+            {/* Start over without losing the corner you set by hand. Stop
+                leaves the pen wherever the file dropped it, which is why
+                doing this manually meant an e-stop and zeroing again. */}
             <button
-              className="btn btn-ghost flex-1"
+              className="btn btn-ghost w-full"
               disabled={busy}
-              onClick={() => guard(() => api.pauseJob())}
+              onClick={() => guard(() => api.restartJob())}
             >
-              Pause
+              {busy ? "restarting…" : "Restart from the top"}
             </button>
-            <button
-              className="btn btn-ghost flex-1 !border-danger !text-danger"
-              disabled={busy}
-              onClick={() => guard(() => api.stopJob())}
-            >
-              Stop
-            </button>
-          </div>
-        ) : paused ? (
-          <div className="flex gap-1.5">
-            <button
-              className="btn btn-copper flex-1"
-              disabled={busy}
-              onClick={() => guard(() => api.resumeJob())}
-            >
-              Resume
-            </button>
-            <button
-              className="btn btn-ghost flex-1 !border-danger !text-danger"
-              disabled={busy}
-              onClick={() => guard(() => api.stopJob())}
-            >
-              Stop
-            </button>
+            <p className="pt-0.5 text-center font-mono text-[0.7rem] text-faint">
+              lifts the pen, waits for the machine to stop, keeps work zero
+            </p>
           </div>
         ) : (
           <button
@@ -593,6 +687,147 @@ function PlotControl({
         )}
         {err && <p className="mt-3 text-sm text-danger">{err}</p>}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One step of the job, with a rule under its heading.
+ *
+ * Numbered because this genuinely is a sequence — a board is looked at,
+ * then validated, then plotted, then watched — and an operator halfway
+ * through wants to know which of those they are in.
+ */
+function Stage({
+  n,
+  title,
+  hint,
+  children,
+}: {
+  n: string;
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mt-10 first:mt-0">
+      <div className="flex items-baseline gap-3 border-b border-line pb-2">
+        <span className="font-mono text-xs text-copper">{n}</span>
+        <h2 className="tlabel !text-ink">{title}</h2>
+        {hint && (
+          <span className="ml-auto hidden truncate font-mono text-xs text-faint sm:inline">
+            {hint}
+          </span>
+        )}
+      </div>
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
+
+/**
+ * The serial link, as text.
+ *
+ * Read-only here on purpose: this page is for running a file, and a stray
+ * hand-typed line in the middle of a plot interleaves with the one being
+ * streamed. The machine page is where you talk to the controller yourself.
+ */
+function BoardConsole({ boardName }: { boardName: string }) {
+  const { snap, console: lines, connected } = useMachine();
+  const job = snap?.job ?? null;
+  const mine =
+    (job?.state === "running" || job?.state === "paused") &&
+    job?.name === boardName;
+
+  if (!connected) {
+    return (
+      <div className="panel ticked px-5 py-6 text-sm text-muted">
+        Nothing on the wire — no machine is connected.{" "}
+        <Link href="/connect" className="text-copper hover:underline">
+          Connect a device
+        </Link>{" "}
+        and every line sent to it shows up here.
+      </div>
+    );
+  }
+
+  return (
+    <MachineConsole
+      lines={lines}
+      onSend={() => {}}
+      disabled
+      label={null}
+      placeholder="Read-only here. Type commands on the machine page."
+      status={
+        <span className="flex items-center gap-3 font-mono text-xs text-muted">
+          <span className="truncate">
+            {mine ? (
+              <>
+                <span className="dot dot-live mr-2 inline-block align-middle" />
+                streaming {boardName} to {snap?.conn.port}
+              </>
+            ) : (
+              `idle on ${snap?.conn.port}`
+            )}
+          </span>
+          <Link
+            href="/dashboard/device"
+            className="flex-none text-copper hover:underline"
+          >
+            send commands
+          </Link>
+        </span>
+      }
+    />
+  );
+}
+
+/**
+ * Whether this board fits the machine, said before anyone presses Plot.
+ *
+ * The bed is read from the connected machine rather than written down here,
+ * so there is one answer to "how big is it" and the page cannot drift from
+ * the profile the plot is actually checked against. Nothing is claimed when
+ * no machine is connected — an invented bed would be worse than silence.
+ */
+function BedFit({ width, height }: { width: number; height: number }) {
+  const { snap, connected } = useMachine();
+  if (!connected || !snap) return null;
+
+  const [bedX, bedY] = snap.conn.travel;
+  const fits = width <= bedX && height <= bedY;
+
+  return (
+    <div className="mt-4 border-t border-line pt-4">
+      <div className="flex items-baseline justify-between font-mono text-xs">
+        <span className="text-muted">bed</span>
+        <span className="text-ink">
+          {bedX} × {bedY} mm
+        </span>
+      </div>
+      <p
+        className={`mt-1.5 text-sm ${fits ? "text-muted" : "text-danger"}`}
+      >
+        {fits
+          ? `This board is ${width} × ${height} mm, and plots from the corner you set as work zero.`
+          : `This board is ${width} × ${height} mm and will not fit. Re-route it smaller, or trace it at a smaller size.`}
+      </p>
+    </div>
+  );
+}
+
+/** Seconds as `m:ss`, or an em dash when there is nothing honest to say. */
+function clock(seconds: number | null | undefined): string {
+  if (seconds == null) return "—";
+  const whole = Math.max(0, Math.round(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <dt className="text-muted">{label}</dt>
+      <dd className="truncate text-ink">{value}</dd>
     </div>
   );
 }

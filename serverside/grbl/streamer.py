@@ -65,7 +65,19 @@ class Streamer:
         transport: Transport,
         rx_buffer: int = 128,
         on_event: Callable[[object], None] | None = None,
+        lock: "threading.RLock | None" = None,
     ) -> None:
+        # `lock` is the shared link lock (see machine.Session.connect). The
+        # streamer, the job and the machine state all guard themselves with
+        # ONE re-entrant lock, because they call each other's callbacks in
+        # both directions: the streamer dispatches a reply into the job
+        # while holding this, and the job feeds the next lines back into the
+        # streamer while holding it too. With a lock each, those two paths
+        # take them in opposite orders and the server deadlocks mid-plot.
+        # One lock has no order to get wrong. It is coarse, and deliberately
+        # so: there is one serial port and one machine, so this work is
+        # already serial. Defaults to a private lock so a Streamer built on
+        # its own (tests, the CLI) still guards itself.
         self.transport = transport
         self.rx_buffer = rx_buffer
         self._on_event = on_event or (lambda _e: None)
@@ -77,7 +89,7 @@ class Streamer:
 
         self._thread: threading.Thread | None = None
         self._running = False
-        self._lock = threading.RLock()
+        self._lock = lock if lock is not None else threading.RLock()
         self._last_poll = 0.0
         self._awaiting_status_since: float | None = None
         self.missed_polls = 0

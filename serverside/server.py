@@ -40,6 +40,7 @@ import asyncio
 import hashlib
 import json
 import math
+import logging
 import os
 import secrets
 import time
@@ -50,12 +51,13 @@ from bson.errors import InvalidId
 from fastapi import (FastAPI, File, Form, HTTPException, UploadFile,
                      WebSocket, WebSocketDisconnect)
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from pymongo import ReturnDocument
 
 import db
 from grbl import ports as grbl_ports
-from grbl.limits import AXIS_INDEX, LimitError
+from grbl.limits import AXIS_INDEX, LimitError, check_program
 from grbl.protocol import Realtime, encode_jog, encode_zero
 from job import load_lines
 from machine import SIM_PORT, PositionUncertain, make_transport, session
@@ -63,6 +65,22 @@ from pcb_gcode import CONFIG, generate_gcode, optimize_order, travel_distance
 from pcb_read import extract_wiring, layer_usage
 from tracer import TraceError, TraceParams, trace_image
 from tracer import emit
+
+# --------------------------------------------------------- terminal narration
+# uvicorn installs handlers for its OWN loggers and nothing else; every other
+# logger propagates to a bare root that drops anything below WARNING on the
+# floor. So the `traceworks` tree gets its own handler here, and a plot
+# narrates itself — what started, how far in it is, what it stopped on — in
+# the terminal already running the server. Guarded because `--reload`
+# re-imports this module, and a second handler would double every line.
+_narration = logging.getLogger("traceworks")
+if not _narration.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)-8s %(message)s"))
+    _narration.addHandler(_handler)
+    _narration.setLevel(logging.INFO)
+    _narration.propagate = False
+
 
 app = FastAPI(title="TraceWorks API", version="0.1.0")
 
@@ -130,6 +148,24 @@ def reject_if_double_sided(wiring: list) -> None:
     ))
 
 
+def reject_if_off_the_bed(width: float, height: float) -> None:
+    """Refuse a board that cannot be drawn, at the moment it is uploaded.
+
+    Caught here rather than at plot time because this is where the operator
+    can still do something about it: the answer is to shrink the board or
+    re-route it, and being told that while looking at the file beats being
+    told it with the pen in the air.
+    """
+    bed_x, bed_y = session.profile.travel_x, session.profile.travel_y
+    if width <= bed_x + 1e-6 and height <= bed_y + 1e-6:
+        return
+    raise HTTPException(400, (
+        f"This board is {width:g} x {height:g} mm, and the bed is "
+        f"{bed_x:g} x {bed_y:g} mm. Re-route it to fit, or trace it at a "
+        f"smaller size."
+    ))
+
+
 def build_board(wiring: list, name: str, filename: str) -> dict:
     """Turn raw wiring data into a stored board document: normalized tracks,
     bounds, per-layer counts, G-code, and a route report."""
@@ -144,6 +180,7 @@ def build_board(wiring: list, name: str, filename: str) -> dict:
     minx, miny = min(xs), min(ys)
     width = round(max(xs) - minx, 2)
     height = round(max(ys) - miny, 2)
+    reject_if_off_the_bed(width, height)
 
     norm = [{
         "net": w["net"],
@@ -210,6 +247,7 @@ def build_board_from_strokes(strokes: list, name: str, filename: str,
     minx, miny, maxx, maxy = emit.bounds(strokes)
     width = round(maxx - minx, 2)
     height = round(maxy - miny, 2)
+    reject_if_off_the_bed(width, height)
 
     gcode_lines = emit.generate_from_strokes(strokes, label=name)
     frame_lines = emit.emit_frame((minx, miny, maxx, maxy))
@@ -895,6 +933,25 @@ def machine_run(body: RunRequest):
     if not lines:
         raise HTTPException(400, "This board's G-code has no instructions.")
 
+    # The last gate before the bytes go out. Boards routed before the
+    # generator moved its output to the origin still carry their KiCad
+    # sheet coordinates — a hundred millimetres off the bed — and streaming
+    # one alarms the machine mid-plot, which costs the operator the work
+    # zero they set by hand. Refusing here costs a sentence.
+    try:
+        check_program(session.profile, lines)
+    except LimitError as exc:
+        raise HTTPException(
+            400,
+            f"This board will not fit the {session.profile.travel_x:g} x "
+            f"{session.profile.travel_y:g} mm bed: {exc}. Upload the file "
+            "again to re-route it against the current bed.",
+        )
+
+    logging.getLogger("traceworks.run").info(
+        "run requested: board %r (%d lines) -> %s",
+        board.get("name", "board"), len(lines), session.state.port,
+    )
     job = session.start_job(lines, body.check, board.get("name", "board"))
     return {"ok": True, "total": len(lines), "check": job.check}
 
@@ -917,10 +974,35 @@ def machine_stop():
     return {"ok": True}
 
 
+@app.post("/machine/restart")
+def machine_restart():
+    """Stop the current job and run the same file again from the top.
+
+    Blocks for as long as the machine takes to come to rest — a second or
+    so of queued moves — because streaming a new file into a head that is
+    still finishing the old one is how a plot ends up drawn twice.
+    """
+    session.require()
+    logging.getLogger("traceworks.run").info(
+        "restart requested for %r", session.require_job().name
+    )
+    job = session.restart_job()
+    return {"ok": True, "total": len(job.lines), "check": job.check}
+
+
 # --------------------------------------------------------- live machine state
 
 @app.websocket("/machine/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
+    """The live feed. Every read of machine state goes through
+    `run_in_threadpool`, deliberately.
+
+    These calls take the link lock, which the streamer thread holds while it
+    writes to the serial port. Called directly from this coroutine, a write
+    that blocks for even a moment blocks the ONLY event loop, and with it
+    every other request the server has — a stalled cable would look like a
+    dead API. On a worker thread it stalls this socket alone.
+    """
     await websocket.accept()
 
     # `state` tracks the MachineState object this loop is currently reading.
@@ -937,11 +1019,11 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     # `session.state` between the head-seq and tail calls) also closes the
     # double-dereference race where a reconnect could land between the two.
     state = session.state
-    snap = state.snapshot()
+    snap = await run_in_threadpool(state.snapshot)
     await websocket.send_json({"type": "snapshot", "data": snap})
     last_seq = snap["seq"]
 
-    backlog = state.console_tail()
+    backlog = await run_in_threadpool(state.console_tail)
     await websocket.send_json({"type": "console", "data": backlog})
     last_console_seq = backlog[-1]["seq"] if backlog else -1
 
@@ -956,12 +1038,12 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 # Resync to it and resend everything from scratch — the old
                 # cursor and seq numbers no longer mean anything.
                 state = session.state
-                snap = state.snapshot()
+                snap = await run_in_threadpool(state.snapshot)
                 await websocket.send_json({"type": "snapshot", "data": snap})
                 last_seq = snap["seq"]
                 last_keepalive = time.time()
 
-                backlog = state.console_tail()
+                backlog = await run_in_threadpool(state.console_tail)
                 await websocket.send_json({"type": "console", "data": backlog})
                 last_console_seq = backlog[-1]["seq"] if backlog else -1
                 continue
@@ -974,15 +1056,15 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             # keepalive and feel laggy for no visible reason. `seq` is not
             # shared state — it is a per-consumer comparison against the
             # payload just taken — so use that instead.
-            snap = state.snapshot()
+            snap = await run_in_threadpool(state.snapshot)
             if snap["seq"] != last_seq or now - last_keepalive >= 1.0:
                 await websocket.send_json({"type": "snapshot", "data": snap})
                 last_seq = snap["seq"]
                 last_keepalive = now
 
-            head_seq = state.console_head_seq()
+            head_seq = await run_in_threadpool(state.console_head_seq)
             if head_seq > last_console_seq:
-                tail = state.console_tail()
+                tail = await run_in_threadpool(state.console_tail)
                 fresh = [line for line in tail if line["seq"] > last_console_seq]
                 if fresh:
                     await websocket.send_json({"type": "console", "data": fresh})

@@ -223,3 +223,62 @@ def test_a_stopped_job_leaves_the_machine_able_to_run_the_next_one(rig):
     snap = run_to_completion(second, streamer, sim)
     assert snap["state"] == "done"
     assert snap["acked"] == 20
+
+
+def test_the_job_guards_itself_with_the_streamer_lock(rig):
+    """One lock, so the two directions of call cannot deadlock.
+
+    The job feeds lines into the streamer while counting acknowledgements,
+    and the streamer dispatches replies into the job while pumping. With a
+    lock each, the request thread takes job-then-streamer and the streamer
+    thread takes streamer-then-job, and the pair wedges mid-plot: every
+    later request hangs too, because the /machine/ws coroutine waiting on
+    the same lock is holding the event loop. Sharing one re-entrant lock
+    leaves no order to get wrong.
+    """
+    _sim, streamer = rig
+    job = Job(load_lines(SQUARE), streamer, name="square")
+
+    assert job._lock is streamer._lock
+
+
+def test_feeding_a_job_while_the_streamer_pumps_does_not_deadlock(rig):
+    """The live race, run for real: a job fed from one thread while another
+    pumps the link, which is exactly what `POST /machine/run` does against
+    the running streamer thread."""
+    import threading
+
+    sim, streamer = rig
+    lines = load_lines("G21 G90\n" + "".join(
+        f"G1 X{i % 20} Y{(i * 7) % 15} F1200\n" for i in range(300)
+    ))
+    job = Job(lines, streamer, name="race")
+    streamer.on_event = job.on_streamer_event
+
+    stop = threading.Event()
+
+    def pump_forever() -> None:
+        while not stop.is_set():
+            sim.tick(SIM_DT)
+            streamer.pump()
+
+    pumper = threading.Thread(target=pump_forever, daemon=True)
+    pumper.start()
+    try:
+        # In a thread of its own so a regression FAILS here rather than
+        # hanging the whole suite: a deadlocked start never returns.
+        starter = threading.Thread(target=job.start, daemon=True)
+        starter.start()
+        starter.join(20)
+        assert not starter.is_alive(), "job.start() is wedged — deadlock"
+
+        deadline = time.time() + 30
+        while job.state == "running" and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        stop.set()
+        pumper.join(5)
+
+    assert not pumper.is_alive(), "the pump thread is wedged — deadlock"
+    assert job.state == "done", f"job did not finish; state={job.state}"
+    assert job.acked == len(lines)

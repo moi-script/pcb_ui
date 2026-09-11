@@ -204,3 +204,40 @@ def test_snapshot_is_never_torn_under_concurrent_apply(state):
         sys.setswitchinterval(old_interval)
 
     assert failures == []
+
+
+def test_snapshot_reads_the_job_without_holding_the_state_lock(state):
+    """`state -> job` and `job -> state` must never both be lock orders.
+
+    The streamer thread takes them one way round: an `ok` is handed to
+    `Job.on_streamer_event`, which holds the job's lock while it feeds the
+    next lines, and each line sent emits a SentEvent that lands in
+    `MachineState.apply` and wants the state lock. If `snapshot()` takes the
+    state lock and then calls `job_source()` for the job's lock, the two
+    orders close a cycle and the server deadlocks mid-plot: the streamer
+    thread stops, and the /machine/ws coroutine that called snapshot() takes
+    the whole event loop down with it, so every later request hangs too.
+    """
+    reached = []
+
+    def job_source() -> dict:
+        # Stand in for the streamer thread: while snapshot() is reading the
+        # job, some other thread must still be able to take the state lock.
+        taken = threading.Event()
+
+        def probe() -> None:
+            if state._lock.acquire(timeout=1.0):
+                state._lock.release()
+                taken.set()
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join(2.0)
+        reached.append(taken.is_set())
+        return {"state": "running", "acked": 7}
+
+    state.job_source = job_source
+    snap = state.snapshot()
+
+    assert reached == [True], "snapshot() held the state lock while reading the job"
+    assert snap["job"] == {"state": "running", "acked": 7}

@@ -19,8 +19,12 @@ class Profile:
     baud: int = 115200
     rx_buffer: int = 128
     pen_mode: str = "servo-pwm"
-    travel_x: float = 300.0
-    travel_y: float = 200.0
+    # The bed. 100 x 100 mm is the whole working area of this machine, and
+    # everything downstream measures against it: what a board may be, what
+    # a jog may reach, and what a file is allowed to command. Z is the pen
+    # servo's throw, not a travel axis.
+    travel_x: float = 100.0
+    travel_y: float = 100.0
     travel_z: float = 5.0
     # Matches what pcb_gcode.py emits: Z >= 0 holds the pen up, Z < 0
     # drops it. These drive the pen up/down readout, not the G-code.

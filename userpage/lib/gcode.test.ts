@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { parseGcode } from "./gcode";
+import {
+  parseGcode,
+  penProgress,
+  PEN_TRACK_START,
+  type Segment,
+} from "./gcode";
 
 describe("parseGcode", () => {
   it("turns a feed move into a segment from the current position", () => {
@@ -195,5 +200,71 @@ describe("cleaned-file line numbers", () => {
   it("counts a parenthesised-only line, because the backend sends it", () => {
     const { segments } = parseGcode(["(setup)", "G1 X1"].join("\n"));
     expect(segments[0].line).toBe(2);
+  });
+});
+
+/** Cumulative 3D lengths, the same thing the visualizer's timeline holds. */
+function cumulative(segments: Segment[]): { ends: Float64Array; total: number } {
+  const ends = new Float64Array(segments.length);
+  let total = 0;
+  segments.forEach((s, i) => {
+    total += Math.hypot(s.x2 - s.x1, s.y2 - s.y1, s.z2 - s.z1);
+    ends[i] = total;
+  });
+  return { ends, total };
+}
+
+describe("penProgress", () => {
+  // A straight run east, then north: 10 mm each, 20 mm of path.
+  const { segments } = parseGcode("G1 X10 Y0\nG1 X10 Y10");
+  const { ends, total } = cumulative(segments);
+
+  it("reports where the pen is, not how far the queue has run ahead", () => {
+    // The controller has acknowledged the whole file, but the machine has
+    // only reached the middle of the first move. The old behaviour drew the
+    // lot; this reports a quarter.
+    const { progress } = penProgress(
+      segments, ends, total, [5, 0, 0], 1, PEN_TRACK_START
+    );
+    expect(progress).toBeCloseTo(0.25, 5);
+  });
+
+  it("never runs past the ceiling, however the pen reads", () => {
+    // Nothing beyond the first move has been sent, so even a position that
+    // matches the second move cannot count as progress into it.
+    const { progress } = penProgress(
+      segments, ends, total, [10, 8, 0], 0.5, PEN_TRACK_START
+    );
+    expect(progress).toBeLessThanOrEqual(0.5);
+  });
+
+  it("does not un-draw finished work when the path comes back on itself", () => {
+    // Out and back over the same ground: the return leg passes right by the
+    // start, and a match free to jump backwards would rewind the drawing.
+    const there = parseGcode("G1 X10 Y0\nG1 X0 Y0").segments;
+    const t = cumulative(there);
+    const first = penProgress(there, t.ends, t.total, [9, 0, 0], 1, PEN_TRACK_START);
+    const second = penProgress(there, t.ends, t.total, [1, 0, 0], 1, first);
+    expect(second.progress).toBeGreaterThanOrEqual(first.progress);
+    expect(second.cursor).toBe(1); // matched the return leg, not the outbound
+  });
+
+  it("starts over when the ceiling drops back, as a restart makes it", () => {
+    const { progress, cursor } = penProgress(
+      segments,
+      ends,
+      total,
+      [1, 0, 0],
+      0.1,
+      { progress: 0.9, cursor: 1 } // left over from the previous run
+    );
+    expect(cursor).toBe(0);
+    expect(progress).toBeLessThanOrEqual(0.1);
+  });
+
+  it("has nothing to say about an empty file", () => {
+    expect(
+      penProgress([], new Float64Array(0), 0, [0, 0, 0], 1, PEN_TRACK_START)
+    ).toEqual({ progress: 0, cursor: 0 });
   });
 });

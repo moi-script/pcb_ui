@@ -242,6 +242,81 @@ class Session:
         job.start()
         return job
 
+    # How long to wait for the controller to come to rest after a stop
+    # before refusing to restart. What has to drain is GRBL's planner —
+    # sixteen blocks — and how long that takes is a property of the file,
+    # not of the machine: sixteen 1 mm moves at the draw feed is about a
+    # second, but sixteen long traverses at a slow feed is most of a
+    # minute. Generous enough not to refuse an honest slow board, bounded
+    # so a wedged controller answers instead of hanging the request.
+    RESTART_DRAIN_TIMEOUT = 45.0
+
+    def restart_job(self) -> Job:
+        """Stop what is plotting and run the same file again from line 1.
+
+        Stop on its own does not leave a machine you can simply re-run:
+        the controller still holds a planner's worth of moves when the
+        button is pressed, and the pen is wherever the file left it —
+        usually down, in the middle of a trace. Starting the file again on
+        top of that drags ink across the board on the way to the first
+        point, which is why doing this by hand meant an e-stop and setting
+        work zero over again.
+
+        So: stop, wait for the machine to actually come to rest, lift the
+        pen, then stream from the top. Work zero is never touched. That is
+        the whole point — a botched plot should not cost the corner that
+        was set by hand.
+        """
+        streamer = self.require()
+        job = self.require_job()
+        lines, check, name = list(job.lines), job.check, job.name
+
+        if job.state in ("running", "paused"):
+            job.stop()
+
+        if not self._wait_until_rested(streamer, self.RESTART_DRAIN_TIMEOUT):
+            raise HTTPException(
+                409,
+                "The machine has not come to rest since the job stopped, so "
+                "starting over would stream into a moving head. Wait for it "
+                "to finish the queued moves, or use the e-stop.",
+            )
+
+        # A stop lands the head somewhere nobody planned; nothing may be
+        # jogged against that base until a report proves where it is.
+        self.taint_planned()
+
+        # Pen up before the file's own first rapid, whatever the file left
+        # behind. Z >= 0 is the servo's "up" (see Profile).
+        streamer.send_line(
+            f"G1 Z{self.profile.pen_up_z:g} F{self.profile.z_feed:g}"
+        )
+
+        return self.start_job(lines, check, name)
+
+    def _wait_until_rested(self, streamer: Streamer, timeout: float) -> bool:
+        """Block until the controller reports Idle with nothing of ours out.
+
+        Two conditions, and both are needed. `Idle` alone can be a report
+        GENERATED before the stop and only dispatched after it — the same
+        staleness `settle()` exists to defend against — so the report must
+        be newer than the one on the books when this started. And an Idle
+        machine with lines still in our outbox is not at rest either; it is
+        about to move again.
+        """
+        baseline = self.state.snapshot()["statusSeq"]
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            snap = self.state.snapshot()
+            if (
+                snap["statusSeq"] > baseline
+                and snap["state"] == "Idle"
+                and streamer.quiet
+            ):
+                return True
+            time.sleep(0.05)
+        return False
+
     def require_job(self) -> Job:
         if self.job is None:
             raise HTTPException(409, "No job is running.")
@@ -293,7 +368,16 @@ class Session:
 
     def connect(self, transport: Transport, port: str, baud: int) -> str:
         self.disconnect()
-        self.state = MachineState(self.profile)
+
+        # One lock for the whole link: the state, the streamer and the job
+        # this connection goes on to run all share it. They call each
+        # other's callbacks in both directions, so a lock apiece can be —
+        # and was — taken in opposite orders by the request thread and the
+        # streamer thread, deadlocking the server mid-plot. A new one per
+        # connection, alongside the new MachineState.
+        link_lock = threading.RLock()
+
+        self.state = MachineState(self.profile, lock=link_lock)
         self.job = None
         self.state.job_source = None
 
@@ -301,6 +385,7 @@ class Session:
             transport,
             rx_buffer=self.profile.rx_buffer,
             on_event=self._on_streamer_event,
+            lock=link_lock,
         )
         self.streamer = streamer
 

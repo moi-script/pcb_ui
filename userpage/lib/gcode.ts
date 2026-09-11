@@ -196,3 +196,106 @@ export function parseGcode(text: string): ParsedGcode {
     travelLength,
   };
 }
+
+/** The running match state. Hand the previous one back on every call. */
+export type PenTrack = {
+  /** 0..1 along the path, by distance. Never greater than the ceiling given. */
+  progress: number;
+  /** Where the search got to. */
+  cursor: number;
+};
+
+export const PEN_TRACK_START: PenTrack = { progress: 0, cursor: 0 };
+
+/**
+ * Where on the toolpath the machine's reported position actually is.
+ *
+ * The obvious way to animate a running job — reveal the path up to the last
+ * line the controller acknowledged — draws ahead of the machine, because
+ * GRBL says `ok` when it has PARSED AND QUEUED a line, not when it has
+ * executed it. On a board with any planner depth the line appears on screen
+ * and the pen arrives seconds later.
+ *
+ * So the acknowledged point is used only as a `ceiling` — the pen cannot be
+ * past what was never sent — and the reported position picks the point
+ * beneath it, by projecting onto each candidate segment and taking the
+ * nearest.
+ *
+ * The result is monotone, and that is not a detail. A toolpath crosses and
+ * doubles back on itself constantly, so the nearest point to a reported
+ * position is genuinely ambiguous: on an out-and-back trace, halfway home
+ * is equidistant from somewhere the pen has already been. Left free, the
+ * match would rewind and un-draw finished work every time. Three things
+ * hold the line forward: the search starts at the previous cursor, ties go
+ * to the later segment, and the answer is floored at the previous progress.
+ * The floor lifts only when `ceiling` itself drops below it, which is a
+ * restart — a new run of the same file, from the top.
+ *
+ * Matching is in XY only. Z on these files is a pen up/down flag, not a
+ * height, so including it would drag every match towards whichever segments
+ * happen to share the current pen state.
+ */
+export function penProgress(
+  segments: Segment[],
+  ends: Float64Array,
+  total: number,
+  pos: [number, number, number],
+  ceiling: number,
+  prev: PenTrack
+): PenTrack {
+  if (segments.length === 0 || total === 0) return PEN_TRACK_START;
+
+  const clamped = ceiling < 0 ? 0 : ceiling > 1 ? 1 : ceiling;
+  const target = clamped * total;
+
+  // Segment index holding the ceiling.
+  let lo = 0;
+  let hi = ends.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ends[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  const limit = lo;
+
+  // The ceiling falling below where we had got to means the file went back
+  // to the top: a restart. Nothing before it can be carried over.
+  const restarted = clamped < prev.progress;
+  const floor = restarted ? 0 : prev.progress;
+  let from = restarted ? 0 : prev.cursor;
+  if (from > limit || from < 0) from = 0;
+
+  let bestIndex = -1;
+  let bestDist = Infinity;
+  let bestT = 0;
+  for (let i = from; i <= limit; i++) {
+    const s = segments[i];
+    const dx = s.x2 - s.x1;
+    const dy = s.y2 - s.y1;
+    const len2 = dx * dx + dy * dy;
+    // A pure Z move — the pen lifting — has no XY extent to project onto.
+    let t = 0;
+    if (len2 > 0) {
+      t = ((pos[0] - s.x1) * dx + (pos[1] - s.y1) * dy) / len2;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+    }
+    const px = s.x1 + dx * t;
+    const py = s.y1 + dy * t;
+    const d = (pos[0] - px) ** 2 + (pos[1] - py) ** 2;
+    // `<=`, so an exact tie goes to the later segment — the machine is
+    // moving forward through the file, not back.
+    if (d <= bestDist) {
+      bestDist = d;
+      bestIndex = i;
+      bestT = t;
+    }
+  }
+
+  if (bestIndex < 0) return { progress: Math.min(clamped, floor), cursor: from };
+
+  const segStart = bestIndex === 0 ? 0 : ends[bestIndex - 1];
+  const segLen = ends[bestIndex] - segStart;
+  const matched = (segStart + segLen * bestT) / total;
+  const progress = Math.min(clamped, Math.max(floor, matched));
+  return { progress, cursor: bestIndex };
+}

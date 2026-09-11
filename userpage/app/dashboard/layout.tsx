@@ -113,8 +113,19 @@ export default function DashboardLayout({
               / {session.name}
             </span>
           </div>
-          <div className="flex items-center gap-4">
-            <span className="hidden items-center gap-2 font-mono text-xs text-muted sm:flex">
+          <div className="flex items-center gap-3">
+            {/* The machine is one click from every page, not just the two
+                that own it: plotting is decided while looking at a board,
+                and walking back to the sidebar to plug in breaks that. */}
+            <Link
+              href={connected ? "/dashboard/device" : "/connect"}
+              title={
+                connected
+                  ? "Open the machine page"
+                  : "Pick a serial port and connect"
+              }
+              className="hidden items-center gap-2 rounded border border-line px-2.5 py-1.5 font-mono text-xs text-muted transition-colors hover:border-line-strong hover:text-ink sm:flex"
+            >
               {/* Two separate facts, deliberately not merged: whether this
                   browser is talking to the server, and whether the server is
                   talking to the machine. */}
@@ -124,7 +135,12 @@ export default function DashboardLayout({
                 : live
                 ? "no machine"
                 : "server offline"}
-            </span>
+            </Link>
+            {!connected && (
+              <Link href="/connect" className="btn btn-copper !px-3 !py-1.5">
+                Connect device
+              </Link>
+            )}
             <button
               onClick={() => {
                 signOut();

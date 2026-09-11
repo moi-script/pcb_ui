@@ -33,7 +33,10 @@ class TraceParams:
     preset: str = "line"             # or "pcb"
     threshold: int | None = None     # None means Otsu + faint-line soften
     invert: bool = False
-    bed: tuple[float, float] = (300.0, 200.0)
+    # The machine's bed, and the fallback size when `size_mm` is 0. Kept in
+    # step with grbl.profile.Profile — the tracer must not scale a drawing
+    # to a bed the plotter does not have.
+    bed: tuple[float, float] = (100.0, 100.0)
     margin: float = 10.0
     # fill mode only — the gap between hatch line centres, in mm. To actually
     # cover copper it must be no wider than the pen.

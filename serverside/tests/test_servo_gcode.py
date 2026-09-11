@@ -154,3 +154,82 @@ class TestAgainstARealBoard:
                   if w["type"] == "track" and w["layer"] == "F.Cu"]
         plunges = [z for _m, z, _f in z_moves(lines) if z < 0]
         assert len(plunges) == len(tracks)
+
+
+# --------------------------------------------------------------- the bed
+
+# A board sitting where KiCad actually leaves one: a hundred-odd millimetres
+# up the sheet. Its own extent is 20 x 10 mm, which fits any bed; its sheet
+# coordinates fit none.
+OFFSET_TRACKS = [
+    {"type": "track", "layer": "F.Cu",
+     "start": (142.5, 97.96), "end": (162.5, 97.96)},
+    {"type": "track", "layer": "F.Cu",
+     "start": (142.5, 107.96), "end": (162.5, 107.96)},
+]
+
+
+def _xy(lines):
+    xs, ys = [], []
+    for line in lines:
+        for letter, value in re.findall(
+            r"([XY])(-?[\d.]+)", line.split(";", 1)[0]
+        ):
+            (xs if letter == "X" else ys).append(float(value))
+    return xs, ys
+
+
+def test_the_board_is_plotted_from_its_own_corner_not_the_kicad_sheet():
+    """The pen starts at work zero, and work zero is the corner of the board.
+
+    A KiCad file places the board wherever it sits on the sheet. Emitting
+    those numbers sends the pen a hundred millimetres away to look for
+    copper that is not there — and off the end of a 100 mm bed on the way.
+    """
+    cfg = dict(pcb_gcode.CONFIG)
+    cfg["layer"] = "F.Cu"
+    lines = pcb_gcode.generate_gcode(OFFSET_TRACKS, cfg)
+    xs, ys = _xy(lines)
+
+    assert min(xs) == 0.0
+    assert min(ys) == 0.0
+    # The drawing keeps its own size; only its position changed.
+    assert max(xs) == 20.0
+    assert max(ys) == 10.0
+
+
+def test_a_normalised_board_fits_the_bed_the_sheet_coordinates_did_not():
+    from grbl.limits import LimitError, check_program
+    from grbl.profile import DEFAULT_PROFILE
+
+    cfg = dict(pcb_gcode.CONFIG)
+    cfg["layer"] = "F.Cu"
+
+    check_program(DEFAULT_PROFILE, pcb_gcode.generate_gcode(OFFSET_TRACKS, cfg))
+
+    # The same geometry left where the sheet put it is refused, and the
+    # message says which axis and by how much.
+    raw = [
+        f"G0 X{s[0]:g} Y{s[1]:g}" for t in OFFSET_TRACKS
+        for s in (t["start"], t["end"])
+    ]
+    with pytest.raises(LimitError) as exc:
+        check_program(DEFAULT_PROFILE, ["G21", "G90", *raw])
+    assert "X162.5" in str(exc.value)
+    assert "100 mm" in str(exc.value)
+
+
+def test_ordering_starts_from_the_pen_not_from_a_corner_of_the_sheet():
+    """Nearest-first is measured from work zero, so the board must be there.
+
+    Ordered against un-normalised coordinates, every track is roughly the
+    same enormous distance from (0, 0) and the ordering is close to
+    arbitrary. This pins the first move as the track nearest the origin.
+    """
+    cfg = dict(pcb_gcode.CONFIG)
+    cfg["layer"] = "F.Cu"
+    lines = pcb_gcode.generate_gcode(OFFSET_TRACKS, cfg)
+
+    first_travel = next(l for l in lines if l.startswith("G0 X"))
+    # The lower track (y=0 after normalising) is nearest work zero.
+    assert first_travel.startswith("G0 X0 Y0")

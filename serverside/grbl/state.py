@@ -54,9 +54,13 @@ class ConsoleLine:
 
 
 class MachineState:
-    def __init__(self, profile: Profile) -> None:
+    def __init__(self, profile: Profile, lock: "threading.RLock | None" = None) -> None:
+        # `lock` is the shared link lock — see Streamer.__init__ for why the
+        # streamer, the job and this object all guard themselves with one
+        # re-entrant lock rather than three. Defaults to a private lock so a
+        # MachineState built on its own still guards itself.
         self.profile = profile
-        self._lock = threading.RLock()
+        self._lock = lock if lock is not None else threading.RLock()
 
         # Filled in by machine.Session with the live job's snapshot function.
         # A callable rather than the Job itself: MachineState sits below the
@@ -202,9 +206,22 @@ class MachineState:
         return "moving"
 
     def snapshot(self) -> dict:
+        """Everything a client needs, as one atomic read of this object.
+
+        The job is the exception, and deliberately: `job_source` is another
+        component's lock, and it is taken here AFTER this one is released.
+        The streamer thread holds the job's lock while it feeds the next
+        lines, and every line it sends comes back through `apply()` for this
+        one — job then state. Calling out to the job from inside this lock
+        would close that cycle in the other direction and deadlock the
+        server mid-plot. The job's numbers are a hair newer than the rest of
+        the payload as a result, which costs nothing: they already count a
+        different thing at a different rate from the position beside them.
+        """
         with self._lock:
             self.dirty = False
-            return {
+            job_source = self.job_source
+            snap = {
                 "conn": {
                     "connected": self.connected,
                     "port": self.port,
@@ -228,7 +245,7 @@ class MachineState:
                 "pen": self._pen(),
                 "alarm": self.alarm,
                 "error": self.error,
-                "job": self.job_source() if self.job_source else None,
+                "job": None,  # filled in below, outside this lock
                 "seq": self._seq,
                 # Both are safety bookkeeping for server/main.py's jog
                 # gating, included here (rather than exposed as separate
@@ -239,6 +256,9 @@ class MachineState:
                 "statusSeq": self._status_seq,
                 "statusQuiet": self.status_quiet,
             }
+
+        snap["job"] = job_source() if job_source else None
+        return snap
 
     def console_tail(self, n: int = CONSOLE_LIMIT) -> list[dict]:
         with self._lock:

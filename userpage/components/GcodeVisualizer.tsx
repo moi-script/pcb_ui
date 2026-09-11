@@ -4,7 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-import { parseGcode, type Segment } from "@/lib/gcode";
+import {
+  parseGcode,
+  penProgress,
+  PEN_TRACK_START,
+  type PenTrack,
+  type Segment,
+} from "@/lib/gcode";
 
 type Props = {
   gcode: string;
@@ -160,7 +166,11 @@ function buildPen(length: number) {
   const gripH = length * 0.22;
   const barrelH = length * 0.68;
 
-  add(new THREE.ConeGeometry(r * 0.42, nibH, 16), nib, nibH / 2);
+  // Point down, at the work. ConeGeometry puts its apex at +Y, which is
+  // away from the paper here — the pen would meet the line with its blunt
+  // end. A cylinder tapering to zero at -Y is the same shape the right way
+  // up, so the sharpest part of the pen is the part touching the toolpath.
+  add(new THREE.CylinderGeometry(r * 0.42, 0, nibH, 16), nib, nibH / 2);
   add(
     new THREE.CylinderGeometry(r * 0.92, r * 0.42, gripH, 20),
     body,
@@ -230,6 +240,10 @@ export default function GcodeVisualizer({
     defaultLift: number;
     setTravelVisible: (v: boolean) => void;
     setPenPos: (pos: [number, number, number] | null) => void;
+    progressAtPen: (
+      pos: [number, number, number],
+      ceiling: number
+    ) => number;
   } | null>(null);
 
   const playingRef = useRef(playing);
@@ -426,9 +440,32 @@ export default function GcodeVisualizer({
       travelGeom.setDrawRange(0, (rapidDone + (cur ? 0 : 1)) * 2);
     };
 
+    // How far along the path the pen has been matched to. Monotone on
+    // purpose: a toolpath crosses itself constantly, and a match free to
+    // jump backwards would rub the drawn line out wherever the machine
+    // passes near somewhere it has already been. The matching itself lives
+    // in lib/gcode so it can be tested without a scene.
+    let penTrack: PenTrack = PEN_TRACK_START;
+
+    const progressAtPen = (
+      pos: [number, number, number],
+      ceiling: number,
+    ): number => {
+      penTrack = penProgress(
+        segments,
+        timeline.ends,
+        timeline.total,
+        pos,
+        ceiling,
+        penTrack,
+      );
+      return penTrack.progress;
+    };
+
     api.current = {
       apply,
       resetView,
+      progressAtPen,
       setLift,
       defaultLift,
       setPenPos: (pos: [number, number, number] | null) => {
@@ -507,22 +544,28 @@ export default function GcodeVisualizer({
     api.current?.setTravelVisible(showTravel);
   }, [showTravel]);
 
+  // One effect, not two: the pen override has to be in place before the
+  // path is revealed, or a frame renders the pen at the old position.
   useEffect(() => {
-    if (liveIndex == null || !api.current) return;
-    const p = progressForLine(
+    if (!api.current) return;
+    if (liveIndex == null) {
+      api.current.setPenPos(penPos);
+      return;
+    }
+    const ceiling = progressForLine(
       parsed.segments,
       timeline.ends,
       timeline.total,
       liveIndex
     );
+    // Follow the pen where the machine reports one, and fall back to the
+    // acknowledged count only when it does not — otherwise the drawn line
+    // runs ahead of the machine by however much the controller has queued.
+    const p = penPos ? api.current.progressAtPen(penPos, ceiling) : ceiling;
     progressRef.current = p;
     setProgress(p);
-    api.current.apply(p);
-  }, [liveIndex, parsed, timeline]);
-
-  useEffect(() => {
-    api.current?.setPenPos(penPos);
-  }, [penPos, parsed, timeline]);
+    api.current.setPenPos(penPos); // applies at the new progress
+  }, [liveIndex, penPos, parsed, timeline]);
 
   const scrub = (p: number) => {
     progressRef.current = p;

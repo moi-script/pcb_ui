@@ -21,10 +21,24 @@ export default function MachineConsole({
   lines,
   onSend,
   disabled,
+  status,
+  placeholder,
+  label = "Console",
 }: {
   lines: ConsoleLine[];
   onSend: (line: string) => void;
   disabled: boolean;
+  /** Shown at the right of the header — who is on the wire, and where. */
+  status?: React.ReactNode;
+  /**
+   * Replaces the input's placeholder. Worth setting wherever the field is
+   * disabled for a reason other than a missing machine: "not connected" is
+   * the wrong answer when the cable is fine and this view is simply
+   * read-only.
+   */
+  placeholder?: string;
+  /** Pass null where the surrounding section already names this. */
+  label?: string | null;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -51,8 +65,9 @@ export default function MachineConsole({
 
   return (
     <div className="panel ticked flex min-h-0 flex-col">
-      <div className="border-b border-line px-5 py-3">
-        <span className="tlabel">Console</span>
+      <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3">
+        {label && <span className="tlabel">{label}</span>}
+        {status}
       </div>
 
       <div
@@ -79,7 +94,9 @@ export default function MachineConsole({
           className="field font-mono text-xs"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder={disabled ? "not connected" : "$$ or a G-code line"}
+          placeholder={
+            placeholder ?? (disabled ? "not connected" : "$$ or a G-code line")
+          }
           disabled={disabled}
         />
       </form>
