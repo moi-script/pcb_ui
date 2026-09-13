@@ -19,7 +19,7 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "TraceWorks · Plot PCBs from your desk",
   description:
-    "Turn a KiCad board into a pen plot that doesn't waste motion. Pair your FluidNC plotter by device ID, look over the toolpath, and send it from the browser.",
+    "Turn a KiCad board into a pen plot that doesn't waste motion. Plug in your Arduino plotter over USB, look over the toolpath, and send it.",
 };
 
 export default function RootLayout({

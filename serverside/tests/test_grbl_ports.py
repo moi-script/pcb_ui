@@ -25,11 +25,6 @@ def test_identifies_official_arduino():
     assert chip == "Arduino"
 
 
-def test_identifies_esp32_usb_bridge():
-    likely, _chip = identify(0x303A, 0x1001)
-    assert likely is True
-
-
 def test_unknown_vid_is_not_flagged():
     likely, chip = identify(0x9999, 0x0001)
     assert likely is False

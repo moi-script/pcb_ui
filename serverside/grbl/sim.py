@@ -10,25 +10,32 @@ from __future__ import annotations
 
 import math
 
-BANNER = "Grbl 1.1h ['$' for help]"
+BANNER = "Grbl 1.1f ['$' for help]"
 
+# The defaults grbl_servo_z flashes (its defaults.h, DEFAULTS_GENERIC): the
+# Arduino this simulator stands in for. 28BYJ-48 steppers on X/Y, and Z is
+# an SG90 whose position only decides pen up (>= 0) or down (< 0).
 DEFAULT_SETTINGS: dict[int, str] = {
     10: "1",        # status report mask: machine position
     20: "0",        # soft limits off
-    22: "0",        # homing off
-    100: "80.000",  # X steps/mm
-    101: "80.000",  # Y steps/mm
-    102: "100.000", # Z steps/mm
-    110: "5000.000",# X max rate
-    111: "5000.000",# Y max rate
-    112: "1000.000",# Z max rate
-    120: "300.000", # X accel
-    121: "300.000", # Y accel
-    122: "100.000", # Z accel
-    130: "300.000", # X max travel
+    21: "0",        # hard limits off (the fork's limit pins are virtual)
+    22: "0",        # homing off -- no switches, so $H is error:5
+    100: "250.000", # X steps/mm
+    101: "250.000", # Y steps/mm
+    102: "250.000", # Z steps/mm
+    110: "500.000", # X max rate, mm/min
+    111: "500.000", # Y max rate
+    112: "500.000", # Z max rate
+    120: "10.000",  # X accel, mm/s^2
+    121: "10.000",  # Y accel
+    122: "10.000",  # Z accel
+    130: "200.000", # X max travel
     131: "200.000", # Y max travel
-    132: "5.000",   # Z max travel
+    132: "200.000", # Z max travel
 }
+
+# $110-$112: Grbl never moves an axis faster than this, whatever F asks for.
+MAX_RATE = tuple(float(DEFAULT_SETTINGS[k]) for k in (110, 111, 112))
 
 AXES = ("X", "Y", "Z")
 
@@ -71,13 +78,18 @@ class GrblSim:
         rx_buffer: int = 128,
         planner_blocks: int = 15,
         travel: tuple[float, float, float] = (300.0, 200.0, 5.0),
+        eeprom: dict | None = None,
     ) -> None:
         self.rx_buffer = rx_buffer
         self.planner_blocks = planner_blocks
         self.travel = list(travel)
 
+        # What survives a reboot. Grbl keeps the G54 offset in EEPROM and
+        # reads it back on boot, while machine position starts again at 0.
+        # Pass the same dict to the next GrblSim to model a reset board.
+        self._eeprom = eeprom if eeprom is not None else {}
         self.pos: list[float] = [0.0, 0.0, 0.0]
-        self.wco: list[float] = [0.0, 0.0, 0.0]
+        self.wco: list[float] = list(self._eeprom.get("g54", [0.0, 0.0, 0.0]))
         self.state = "Idle"
         self.feed = 0.0
         # $C is a toggle, not a flag, and leaking it on makes the next file
@@ -221,9 +233,9 @@ class GrblSim:
             return
 
         if upper == "$H":
-            self.pos = [0.0, 0.0, 0.0]
-            self.state = "Idle"
-            self._reply("ok", cost)
+            # Homing is compiled in but disabled ($22=0), and grbl_servo_z
+            # has no switches to home against: Grbl answers error:5.
+            self._reply("error:5", cost)
             return
 
         if self.state == "Alarm":
@@ -246,11 +258,19 @@ class GrblSim:
             self._motion(upper[3:], cost, jog=True)
             return
 
-        if upper.startswith("G10 L20"):
+        if upper.startswith("G10 L20") or upper.startswith("G10 L2 "):
+            # L20: the current position reads as the given value.
+            # L2: the offset itself is the given value.
+            relative = upper.startswith("G10 L20")
             for i, axis in enumerate(AXES):
                 token = self._word(upper, axis)
                 if token is not None:
-                    self.wco[i] = self.pos[i] - token
+                    self.wco[i] = self.pos[i] - token if relative else token
+            self._eeprom["g54"] = list(self.wco)
+            self._reply("ok", cost)
+            return
+
+        if upper == "G92.1":
             self._reply("ok", cost)
             return
 
@@ -379,7 +399,7 @@ class GrblSim:
                 self._finish_block()
                 continue
 
-            speed = block.feed / 60.0  # mm/min -> mm/s
+            speed = self._capped_feed(block.feed, delta, distance) / 60.0
             step = speed * remaining
             if step >= distance:
                 self.pos = list(block.target)
@@ -393,6 +413,15 @@ class GrblSim:
         if not self._queue and self.state in ("Run", "Jog"):
             self.state = "Idle"
             self.feed = 0.0
+
+    @staticmethod
+    def _capped_feed(feed: float, delta: list[float], distance: float) -> float:
+        """The feed Grbl actually runs: no axis may exceed its $11x max rate."""
+        for i in range(3):
+            share = abs(delta[i]) / distance
+            if share > 1e-9:
+                feed = min(feed, MAX_RATE[i] / share)
+        return feed
 
     def _finish_block(self) -> None:
         done = self._queue.pop(0)

@@ -18,7 +18,9 @@ class Profile:
     controller: str = "grbl"
     baud: int = 115200
     rx_buffer: int = 128
-    pen_mode: str = "servo-pwm"
+    # grbl_servo_z drives the SG90 from the Z axis (D10), not from a
+    # spindle PWM (M3 S...). servo_up/servo_down only apply to servo-pwm.
+    pen_mode: str = "z-axis"
     # The bed. 100 x 100 mm is the whole working area of this machine, and
     # everything downstream measures against it: what a board may be, what
     # a jog may reach, and what a file is allowed to command. Z is the pen
@@ -32,10 +34,13 @@ class Profile:
     pen_down_z: float = -0.5
     servo_up: int = 0
     servo_down: int = 255
-    travel_feed: float = 3000.0
-    draw_feed: float = 1200.0
-    z_feed: float = 500.0
-    jog_feed: float = 1000.0
+    # grbl_servo_z's $110-$112 are 500 mm/min; Grbl clamps anything above.
+    travel_feed: float = 500.0
+    draw_feed: float = 500.0
+    # 1 mm of Z at F200 is 300 ms, the SG90's travel budget. The pen lift
+    # after a stop uses this, so a faster Z would leave the pen dragging.
+    z_feed: float = 200.0
+    jog_feed: float = 500.0
 
 
 DEFAULT_PROFILE = Profile()

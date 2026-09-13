@@ -68,7 +68,7 @@ def main():
     print("  labExam_wiring.png     - board traces by copper layer")
     print("  labExam.gcode          - plotter-ready G-code (optimized)")
     print("  labExam_toolpath.png   - G-code toolpath verification")
-    print("\nNext: stream labExam.gcode to GRBL/FluidNC (USB or WiFi).")
+    print("\nNext: stream labExam.gcode to GRBL over USB (pcb_send.py).")
 
 
 if __name__ == "__main__":

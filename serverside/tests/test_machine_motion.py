@@ -70,9 +70,41 @@ def test_zero_sets_the_work_offset(client):
     client.post("/machine/jog", json={"axis": "X", "distance": 10.0, "feed": 1000})
     settle(client)
 
-    assert client.post("/machine/zero", json={"axes": "XYZ"}).status_code == 200
+    assert client.post("/machine/zero", json={"axes": "XY"}).status_code == 200
     snap = settle(client)
     assert snap["wpos"][0] == pytest.approx(0.0, abs=0.05)
+
+
+def test_z_cannot_be_zeroed(client):
+    # grbl_servo_z picks pen up/down from MACHINE Z. A Z work offset shifts
+    # every G-code Z without moving that switching point, so after zeroing Z
+    # with the pen down the "pen up" height still reads as down and the pen
+    # drags between traces.
+    settle(client)
+    for axes in ("Z", "XYZ"):
+        r = client.post("/machine/zero", json={"axes": axes})
+        assert r.status_code == 400, axes
+        assert "Z" in r.json()["detail"]
+
+
+def test_a_saved_zero_does_not_survive_reconnecting(client):
+    # G10 L20 is stored in the Arduino's EEPROM, but connecting reboots the
+    # board and machine position restarts at 0 wherever the pen is. With no
+    # homing, the old zero now points at an arbitrary spot: the first move
+    # of a plot would travel off to it. A fresh boot must start from the pen.
+    settle(client)
+    client.post("/machine/jog", json={"axis": "X", "distance": 30.0, "feed": 1000})
+    client.post("/machine/jog", json={"axis": "Y", "distance": 20.0, "feed": 1000})
+    settle(client, timeout=15.0)
+    assert client.post("/machine/zero", json={"axes": "XY"}).status_code == 200
+    settle(client)
+
+    session.disconnect()
+    assert client.post("/machine/connect",
+                       json={"port": "SIM", "baud": 115200}).status_code == 200
+    snap = settle(client)
+    assert snap["mpos"][:2] == pytest.approx([0.0, 0.0], abs=0.05)
+    assert snap["wpos"][:2] == pytest.approx([0.0, 0.0], abs=0.05)
 
 
 def test_estop_returns_immediately_and_does_not_need_the_queue(client):

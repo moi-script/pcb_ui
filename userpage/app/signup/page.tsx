@@ -40,7 +40,7 @@ export default function SignUp() {
               Set up your workbench.
             </h1>
             <p className="mt-3 text-sm text-muted">
-              Create an account, then pair your plotter by its device ID.
+              Create an account, then plug in your plotter over USB and connect.
             </p>
 
             <form onSubmit={submit} className="mt-8 space-y-4">
@@ -95,7 +95,7 @@ export default function SignUp() {
         </div>
       </main>
 
-      <AuthAside caption="// Next you'll pair a machine by typing in the device ID printed on its controller." />
+      <AuthAside caption="// Next you'll plug the plotter in over USB and pick its port." />
     </div>
   );
 }

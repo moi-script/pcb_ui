@@ -81,8 +81,8 @@ export default function LogIn() {
             <div className="mt-6 rounded border border-line bg-panel p-3 text-xs text-muted">
               <span className="tlabel">new here?</span>
               <p className="mt-1 font-mono">
-                Accounts are stored for real now. Create one first, then pair a
-                machine with its device ID.
+                Accounts are stored for real now. Create one first, then plug in
+                your plotter over USB and connect.
               </p>
             </div>
 

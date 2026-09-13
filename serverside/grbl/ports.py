@@ -7,12 +7,11 @@ from dataclasses import dataclass
 # the UI say "COM5 - CH340" instead of leaving the user to guess.
 KNOWN_VENDORS: dict[int, str] = {
     0x1A86: "CH340",     # WCH, on most clone Unos and Nanos
-    0x10C4: "CP2102",    # Silicon Labs, common on ESP32 boards
+    0x10C4: "CP2102",    # Silicon Labs, on some Nano and Pro Mini clones
     0x0403: "FTDI",      # FTDI, on older Arduinos
     0x2341: "Arduino",   # Arduino SA
     0x2A03: "Arduino",   # Arduino SRL
     0x1B4F: "SparkFun",
-    0x303A: "ESP32-S",   # Espressif native USB
 }
 
 BAUD_RATES: list[int] = [115200, 250000, 57600, 38400, 19200, 9600]

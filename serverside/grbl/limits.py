@@ -40,10 +40,14 @@ def check_jog(
 
     limit = _travel(profile, axis)
     target = mpos[AXIS_INDEX[axis]] + distance
+    # Z is the pen servo, not a bed axis. grbl_servo_z drops the pen only
+    # below machine Z0, so Z's envelope runs the same distance under zero.
+    floor = -limit if axis == "Z" else 0.0
 
-    if target < -EPS:
+    if target < floor - EPS:
         raise LimitError(
-            f"{axis}{distance:+g} would reach {target:g} mm, below the 0 mm limit"
+            f"{axis}{distance:+g} would reach {target:g} mm, "
+            f"below the {floor:g} mm limit"
         )
     if target > limit + EPS:
         raise LimitError(

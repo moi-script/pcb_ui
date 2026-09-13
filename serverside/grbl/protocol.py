@@ -1,4 +1,4 @@
-"""GRBL 1.1 / FluidNC protocol codec.
+"""GRBL 1.1 protocol codec.
 
 Pure functions and dataclasses: bytes in, values out. Nothing in this module
 performs I/O, which is what lets the fiddly parts of the protocol be tested
@@ -256,7 +256,7 @@ def parse_reply(line: str) -> Reply | None:
         _, _, text = body.partition(":")
         return Reply("message", None, text or body)
 
-    if low.startswith("grbl ") or low.startswith("fluidnc"):
+    if low.startswith("grbl "):
         return Reply("banner", None, line)
 
     if line.startswith("$"):

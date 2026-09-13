@@ -66,3 +66,14 @@ def test_default_profile_has_a_real_envelope():
     assert DEFAULT_PROFILE.travel_z > 0
     assert DEFAULT_PROFILE.rx_buffer == 128
     assert DEFAULT_PROFILE.baud == 115200
+
+
+def test_z_may_jog_below_zero_to_drop_the_pen(profile):
+    # grbl_servo_z drops the pen only when machine Z < 0, and the board
+    # powers up at Z0. A floor at 0 would make pen-down unreachable by jog.
+    check_jog(profile, (0.0, 0.0, 0.0), "Z", -1.0)
+
+
+def test_z_still_has_a_floor(profile):
+    with pytest.raises(LimitError):
+        check_jog(profile, (0.0, 0.0, 0.0), "Z", -10.0)

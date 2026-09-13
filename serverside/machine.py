@@ -23,6 +23,11 @@ BANNER_TIMEOUT = 3.0
 
 SIM_PORT = "SIM"
 
+# The simulated board's EEPROM. It outlives each SimTransport the way the
+# real one outlives a reset, so reconnecting to SIM behaves like re-plugging
+# the Arduino: position back to zero, stored work offset still there.
+_SIM_EEPROM: dict = {}
+
 
 def _sim_transport() -> Transport:
     """The simulator, wired to a real clock and safe to share across threads.
@@ -44,7 +49,7 @@ def _sim_transport() -> Transport:
         TICK = 0.01
 
         def __init__(self) -> None:
-            super().__init__()
+            super().__init__(eeprom=_SIM_EEPROM)
             self._lock = threading.RLock()
             self._stop = threading.Event()
             self._clock = threading.Thread(
@@ -415,6 +420,14 @@ class Session:
                 "Wrong baud rate, or not a GRBL controller.",
             )
 
+        if self.state.firmware:
+            # It announced itself, so it has just booted: machine position
+            # restarts at 0 wherever the pen is, but the G54 work offset
+            # comes back from EEPROM. With no homing that stored offset
+            # points at an arbitrary spot, and the first move of a plot
+            # heads off to it, far from the board. Start from the pen.
+            streamer.send_line("G10 L2 P1 X0 Y0 Z0")
+            streamer.send_line("G92.1")
         streamer.send_line("$I")
         streamer.send_line("$$")
         streamer.start(poll_hz=5.0)

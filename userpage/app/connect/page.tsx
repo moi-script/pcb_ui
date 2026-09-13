@@ -184,8 +184,9 @@ export default function Connect() {
             </form>
 
             <p className="mt-5 border-t border-line pt-4 text-xs text-faint">
-              Connecting resets the controller, so work zero is cleared every
-              time you connect. Set it on the Machine page before plotting.
+              Connecting resets the controller and puts work zero where the pen
+              is now. Put the pen over the board&apos;s corner first, or set zero
+              on the Machine page before plotting.
             </p>
           </div>
 

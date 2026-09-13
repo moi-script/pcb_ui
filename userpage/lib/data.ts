@@ -80,52 +80,6 @@ export function getProject(id: string): Project | undefined {
   return projects.find((p) => p.id === id);
 }
 
-export type Device = {
-  id: string;
-  alias: string;
-  firmware: string;
-  controller: string;
-  connection: "USB" | "WiFi";
-  port: string;
-  bed: string; // mm
-  status: "online" | "idle" | "offline";
-  penUpZ: number;
-  penDownZ: number;
-  travelFeed: number;
-  drawFeed: number;
-};
-
-export const device: Device = {
-  id: "TW-3F9A-C210",
-  alias: "Bench Plotter 01",
-  firmware: "FluidNC 3.9.7",
-  controller: "MKS DLC32 · ESP32",
-  connection: "WiFi",
-  port: "192.168.1.42",
-  bed: "300 × 300",
-  status: "online",
-  penUpZ: 5,
-  penDownZ: 0,
-  travelFeed: 3000,
-  drawFeed: 800,
-};
-
-// A short, representative slice of the emitted G-code.
-export const gcodeSample = `G21              ; units = mm
-G90              ; absolute positioning
-G0 Z5            ; pen up
-G0 X12.400 Y8.100 F3000
-G1 Z0 F3000      ; pen down
-G1 X31.900 Y8.100 F800
-G0 Z5            ; pen up
-G0 X31.900 Y21.550 F3000
-G1 Z0 F3000
-G1 X44.700 Y21.550 F800
-G0 Z5
-; ... 143 traces, travel-optimized ...
-G0 X0 Y0         ; return home
-M2               ; end`;
-
 export type PipelineStage = {
   key: string;
   title: string;
@@ -161,6 +115,6 @@ export const pipeline: PipelineStage[] = [
     key: "05",
     title: "Send it to the plotter",
     detail:
-      "Push the file over USB or WiFi to your FluidNC board. Each line waits for the controller to answer before the next one goes, and you can do a no-motion dry check first to make sure the whole file is accepted.",
+      "Push the file over USB to your Arduino running grbl_servo_z. Each line waits for the controller to answer before the next one goes, and you can do a no-motion dry check first to make sure the whole file is accepted.",
   },
 ];

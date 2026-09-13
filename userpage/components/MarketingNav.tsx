@@ -11,7 +11,7 @@ export default function MarketingNav() {
             Pipeline
           </a>
           <a href="#device" className="tlabel hover:text-ink transition-colors">
-            Pairing
+            Connect
           </a>
           <a href="#hardware" className="tlabel hover:text-ink transition-colors">
             Hardware

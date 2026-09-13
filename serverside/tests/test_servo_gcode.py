@@ -233,3 +233,36 @@ def test_ordering_starts_from_the_pen_not_from_a_corner_of_the_sheet():
     first_travel = next(l for l in lines if l.startswith("G0 X"))
     # The lower track (y=0 after normalising) is nearest work zero.
     assert first_travel.startswith("G0 X0 Y0")
+
+
+# --- the rest of the machine settings, against grbl_servo_z's defaults --------
+from grbl.profile import DEFAULT_PROFILE  # noqa: E402
+from grbl.sim import MAX_RATE  # noqa: E402
+
+FIRMWARE_MAX_RATE = min(MAX_RATE)  # $110-$112, mm/min
+
+
+def test_generated_feeds_do_not_exceed_the_firmware_max_rate():
+    # Grbl silently clamps anything faster, so a higher F only makes the
+    # time estimate and the simulator lie about the real machine.
+    for key in ("travel_feed", "draw_feed", "z_feed"):
+        assert pcb_gcode.CONFIG[key] <= FIRMWARE_MAX_RATE, key
+
+
+def test_profile_feeds_do_not_exceed_the_firmware_max_rate():
+    for key in ("travel_feed", "draw_feed", "z_feed", "jog_feed"):
+        assert getattr(DEFAULT_PROFILE, key) <= FIRMWARE_MAX_RATE, key
+
+
+def test_profile_pen_lift_gives_the_servo_time_to_travel():
+    # machine.py lifts the pen with the profile's z_feed after a stop.
+    p = DEFAULT_PROFILE
+    seconds = abs(p.pen_up_z - p.pen_down_z) / p.z_feed * 60
+    assert seconds >= MIN_Z_MOVE_SECONDS
+
+
+def test_profile_pen_matches_the_generated_gcode():
+    assert DEFAULT_PROFILE.pen_up_z == pcb_gcode.CONFIG["pen_up_z"]
+    assert DEFAULT_PROFILE.pen_down_z == pcb_gcode.CONFIG["pen_down_z"]
+    # The pen is the Z axis on grbl_servo_z, not an M3 S<pwm> spindle servo.
+    assert DEFAULT_PROFILE.pen_mode == "z-axis"

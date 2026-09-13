@@ -24,9 +24,9 @@ export default function Landing() {
             </h1>
             <p className="mt-6 max-w-md text-lg leading-relaxed text-ink-soft">
               Give TraceWorks a single-layer KiCad board and it works out a pen
-              plot that doesn&apos;t waste motion. Pair your FluidNC machine with
-              its device ID, look over the toolpath, and send it straight from
-              the browser. You won&apos;t need a separate desktop sender.
+              plot that doesn&apos;t waste motion. Plug your Arduino plotter in
+              over USB, look over the toolpath, and send it straight from
+              TraceWorks. You won&apos;t need a separate G-code sender.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <Link href="/signup" className="btn btn-copper">
@@ -37,7 +37,7 @@ export default function Landing() {
                 Download for Windows
               </a>
               <Link href="/connect" className="btn btn-ghost">
-                Pair a device →
+                Connect a machine →
               </Link>
             </div>
             <p className="mt-3 font-mono text-xs text-faint">
@@ -100,42 +100,42 @@ export default function Landing() {
         <div className="grid items-center gap-14 lg:grid-cols-2">
           <div className="order-2 lg:order-1">
             <div className="panel ticked mx-auto max-w-sm p-6">
-              <span className="tlabel">Pair a device</span>
+              <span className="tlabel">Connect a machine</span>
               <div className="mt-4 rounded border border-line-strong bg-well p-4">
-                <p className="tlabel mb-2">Device ID</p>
+                <p className="tlabel mb-2">Serial port</p>
                 <div className="flex items-center gap-2 font-mono text-xl tracking-wider text-ink">
-                  <span className="text-copper">TW</span>-3F9A-C210
+                  <span className="text-copper">COM3</span>· CH340
                 </div>
               </div>
               <div className="mt-4 space-y-2.5 font-mono text-xs text-muted">
-                <Row k="controller" v="MKS DLC32 · ESP32" />
-                <Row k="firmware" v="FluidNC 3.9.7" />
-                <Row k="link" v="WiFi · 192.168.1.42" />
-                <Row k="status" v="paired" accent />
+                <Row k="controller" v="Arduino Uno" />
+                <Row k="firmware" v="Grbl 1.1f · grbl_servo_z" />
+                <Row k="link" v="USB · 115200 baud" />
+                <Row k="status" v="connected" accent />
               </div>
               <div className="mt-5 flex items-center gap-2 border-t border-line pt-4">
                 <span className="text-xs text-copper">
-                  ▸ Bound to your account
+                  ▸ Plotter found on this PC
                 </span>
               </div>
             </div>
           </div>
           <div className="order-1 lg:order-2">
-            <span className="tlabel">One ID, one machine</span>
+            <span className="tlabel">One cable, no setup</span>
             <h2 className="mt-3 text-3xl tracking-tight text-ink">
-              Your account is bound to your plotter.
+              Plug in the plotter and connect.
             </h2>
             <p className="mt-4 text-ink-soft leading-relaxed">
-              Every machine has its own device ID, printed on the controller and
-              shown in the FluidNC console. Type it in once and that machine
-              belongs to your account. Jobs go to it, and nobody else can drive
-              it.
+              The Arduino hangs off a USB cable on this PC, the way Universal
+              Gcode Sender works. TraceWorks finds the port, spots the CH340
+              chip, and talks Grbl to it directly. There is no network, no
+              device ID, and nothing to pair.
             </p>
             <ul className="mt-6 space-y-3">
               {[
-                "Enter the ID and it pairs to your account in a few seconds.",
-                "Move a plotter to a new bench and its job history comes along.",
-                "Got more than one? Pair each and switch between them.",
+                "Pick the port and press Connect. The last one is remembered.",
+                "Jog, zero and watch the live position before you plot.",
+                "No hardware yet? Connect to the built-in simulator.",
               ].map((t) => (
                 <li key={t} className="flex gap-3 text-sm text-ink-soft">
                   <span className="mt-1.5 h-1.5 w-1.5 flex-none bg-copper" />
@@ -144,7 +144,7 @@ export default function Landing() {
               ))}
             </ul>
             <Link href="/connect" className="btn btn-primary mt-8">
-              Try the pairing flow
+              Connect a machine
             </Link>
           </div>
         </div>
@@ -164,19 +164,19 @@ export default function Landing() {
             />
             <Feature
               title="Dry-check first"
-              body="Run the whole file past FluidNC with no motion to catch a bad line before the pen ever touches paper."
+              body="Run the whole file through Grbl's check mode with no motion to catch a bad line before the pen ever touches paper."
             />
             <Feature
               title="Both sides"
               body="Front and back copper get their own colors. Plot one side, flip the board, and line up the other."
             />
             <Feature
-              title="USB or WiFi"
-              body="Send over a serial cable or across your network to the ESP32. Either way the controller acknowledges every line."
+              title="Over USB"
+              body="G-code streams over the serial cable to the Arduino, and the controller acknowledges every line before the next one goes."
             />
             <Feature
               title="Per-machine settings"
-              body="Bed size, pen-up and pen-down height, and feed rates are saved for each machine to match its FluidNC config."
+              body="Bed size, pen-up and pen-down height, and feed rates are saved for each machine to match the grbl_servo_z firmware."
             />
           </div>
         </div>
@@ -190,16 +190,17 @@ export default function Landing() {
             Works with the plotter you already build.
           </h2>
           <p className="mt-4 text-ink-soft">
-            We don&apos;t reinvent motion control. FluidNC handles the real-time
-            work, and you flash it once onto a supported ESP32 board, then pair.
+            We don&apos;t reinvent motion control. Grbl handles the real-time
+            work: flash grbl_servo_z onto an Arduino Uno once, plug it in over
+            USB, and connect.
           </p>
         </div>
         <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {[
-            ["MKS DLC32", "All-in-one ESP32 + drivers. Supported out of the box."],
-            ["ESP32 + CNC shield", "Bare board with TMC2209 or A4988 drivers."],
-            ["NEMA 17 × 2", "X and Y steppers on GT2 belts."],
-            ["SG90 / MG90S servo", "Lifts the pen on Z: up at 5 mm, down at 0."],
+            ["Arduino Uno + grbl_servo_z", "Grbl 1.1f at 115200 baud. CH340 clones work."],
+            ["28BYJ-48 + ULN2003 × 2", "X on D5–D2, Y on A3–A0. 500 mm/min max."],
+            ["SG90 servo on D10", "Lifts the pen on Z: down below 0, up at 0 and above."],
+            ["External 5 V supply", "Powers the servo and drivers, ground shared with the Uno."],
           ].map(([t, b]) => (
             <div key={t} className="panel ticked p-5">
               <p className="font-mono text-sm text-ink">{t}</p>

@@ -104,27 +104,31 @@ export default function MachinePage() {
           <div className="panel p-5">
             <span className="tlabel">Work zero</span>
             <p className="mt-2 text-xs text-muted">
-              Connecting reset the controller, so work zero was cleared. Jog to
-              the corner of the board, then set it.
+              Connecting reset the controller and put work zero where the pen
+              is. To plot somewhere else, jog to the corner of the board, then
+              set it. Z is the pen servo and is never zeroed.
             </p>
-            <div className="mt-4 grid grid-cols-4 gap-1.5">
-              {["X", "Y", "Z", "XYZ"].map((axes) => (
+            <div className="mt-4 grid grid-cols-3 gap-1.5">
+              {["X", "Y", "XY"].map((axes) => (
                 <button
                   key={axes}
                   className="btn btn-ghost font-mono text-xs"
                   disabled={jobRunning}
                   onClick={() => guard(() => api.zero(axes))}
                 >
-                  {axes === "XYZ" ? "zero all" : `zero ${axes}`}
+                  {axes === "XY" ? "zero X + Y" : `zero ${axes}`}
                 </button>
               ))}
             </div>
 
             <div className="mt-4 flex gap-1.5">
+              {/* grbl_servo_z has no limit switches and ships with homing
+                  off ($22=0), so $H can only ever answer error:5. Set
+                  work zero by hand with the zero buttons instead. */}
               <button
                 className="btn btn-ghost flex-1"
-                disabled={jobRunning}
-                onClick={() => guard(() => api.home())}
+                disabled
+                title="No limit switches on grbl_servo_z: jog to the corner and zero instead"
               >
                 Home ($H)
               </button>
@@ -135,6 +139,9 @@ export default function MachinePage() {
                 Unlock ($X)
               </button>
             </div>
+            <p className="mt-2 font-mono text-[0.7rem] text-faint">
+              no homing on this firmware — jog to the corner, then zero X + Y
+            </p>
           </div>
 
           {/* Set apart from every other control: an e-stop next to a jog

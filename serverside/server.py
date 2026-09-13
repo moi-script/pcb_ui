@@ -58,6 +58,7 @@ from pymongo import ReturnDocument
 import db
 from grbl import ports as grbl_ports
 from grbl.limits import AXIS_INDEX, LimitError, check_program
+from grbl.profile import DEFAULT_PROFILE
 from grbl.protocol import Realtime, encode_jog, encode_zero
 from job import load_lines
 from machine import SIM_PORT, PositionUncertain, make_transport, session
@@ -209,10 +210,14 @@ def build_board(wiring: list, name: str, filename: str) -> dict:
     pen_up_before = round(travel_distance(pairs_raw))
     pen_up_after = round(travel_distance(optimize_order(layer_tracks)))
     draw_len = sum(_dist(w["start"], w["end"]) for w in layer_tracks)
-    # rough time: draw + travel at their feeds, plus ~1.8s per pen lift
+    # rough time: draw + travel at their feeds, plus a pen drop and lift
+    # (1 mm of Z each, at z_feed) per track
+    pen_moves = len(layer_tracks) * 2 * abs(cfg["pen_up_z"] - cfg["pen_down_z"])
     est_minutes = max(
         1,
-        math.ceil(draw_len / 800 + pen_up_after / 3000 + len(layer_tracks) * 0.03),
+        math.ceil(draw_len / cfg["draw_feed"]
+                  + pen_up_after / cfg["travel_feed"]
+                  + pen_moves / cfg["z_feed"]),
     )
 
     return {
@@ -377,7 +382,7 @@ class ConnectRequest(BaseModel):
 class JogRequest(BaseModel):
     axis: str
     distance: float
-    feed: float = 1000.0
+    feed: float = DEFAULT_PROFILE.jog_feed  # grbl_servo_z's $110 cap
 
 
 class ZeroRequest(BaseModel):
@@ -627,6 +632,10 @@ def machine_ports():
     try:
         found = grbl_ports.list_ports()
     except Exception:  # noqa: BLE001 - a broken enumeration is not fatal
+        # ...but it must not be silent: an empty list with no reason is
+        # indistinguishable from "nothing is plugged in".
+        logging.getLogger("traceworks.ports").exception(
+            "listing serial ports failed")
         found = []
     payload = [
         {
@@ -826,6 +835,14 @@ def machine_zero(body: ZeroRequest) -> dict:
     axes = axes.upper()
     if not axes or any(a not in AXIS_INDEX for a in axes):
         raise HTTPException(400, f"axes must be made up of X, Y, Z — got {axes!r}")
+    if "Z" in axes:
+        # grbl_servo_z switches the pen on MACHINE Z (below 0 is down). A Z
+        # work offset moves every G-code Z but not that switch, so "pen up"
+        # can land below it and the pen drags between traces.
+        raise HTTPException(
+            400, "Z can't be zeroed: the pen servo follows machine Z, so a "
+                 "Z offset would leave the pen down between traces. Zero X "
+                 "and Y only.")
     streamer.send_line(encode_zero(axes))
     # G10 L20 itself doesn't move the machine, but this route can't prove a
     # jog isn't still draining through the queue underneath it (the ZERO

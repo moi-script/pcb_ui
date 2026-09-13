@@ -1,6 +1,6 @@
 """Convert extracted PCB wiring into G-code for a pen-plotter / drawing machine.
 
-Flow:  KiCad file  ->  pcb_read.wiring_data  ->  G-code  ->  GRBL/FluidNC
+Flow:  KiCad file  ->  pcb_read.wiring_data  ->  G-code  ->  GRBL (grbl_servo_z)
 
 Each track segment becomes a pen-up travel to its start, a pen-down, a draw
 to its end, then a pen-up. Coordinates are passed straight through in mm.
@@ -29,8 +29,12 @@ CONFIG = {
     # this feed or shortening the throw starts the next X/Y move before the
     # pen has landed.
     "z_feed": 200,          # speed for pen up/down moves (mm/min)
-    "travel_feed": 3000,    # speed for pen-up moves (mm/min)
-    "draw_feed": 800,       # speed while drawing (mm/min)
+    # grbl_servo_z caps every axis at 500 mm/min ($110-$112 in its
+    # defaults.h). Grbl clamps a faster F without a word, so asking for more
+    # changes nothing on the machine and only makes estimates wrong. Raise
+    # these together with $110/$111 if the 28BYJ-48s keep up.
+    "travel_feed": 500,     # speed for pen-up moves (mm/min)
+    "draw_feed": 500,       # speed while drawing (mm/min)
     "flip_y": False,        # set True if your machine's Y is inverted vs KiCad
     "layer": "F.Cu",        # which copper layer to plot ("F.Cu", "B.Cu", or None for all)
     "optimize": True,       # reorder tracks to minimise pen-up travel

@@ -23,7 +23,8 @@ def test_never_exceeds_the_rx_buffer():
     s = Streamer(sim, rx_buffer=128)
     for i in range(200):
         s.send_line(f"G1 X{i % 50}.000 Y{i % 30}.000 F1000")
-    run_until_idle(s, sim)
+    # Long zig-zags at the firmware's 500 mm/min cap: give it simulated time.
+    run_until_idle(s, sim, max_steps=200_000)
     assert sim.peak_rx_used <= 128
 
 

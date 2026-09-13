@@ -1,22 +1,70 @@
-# Hardware Setup — ESP32 Pen Plotter (FluidNC)
+# Hardware Setup — Arduino Pen Plotter (grbl_servo_z)
 
 How to build and set up the machine that plots the G-code produced by this
-project. The controller runs **FluidNC** — free, open-source CNC firmware that
-you flash onto an ESP32. You don't write or build it; you install it once.
+project: an **Arduino Uno** running
+[grbl_servo_z](https://github.com/moi-script/grbl_servo_z) — Grbl 1.1f with
+28BYJ-48 steppers on X/Y and an SG90 servo lifting the pen on Z.
 
 ```
-KiCad → pcb_gcode.py → G-code → the backend's serial link → [controller] → motors → pen
+KiCad → pcb_gcode.py → G-code → USB serial → [Arduino + grbl_servo_z] → motors → pen
 ```
-
-> The build below is the FluidNC/ESP32 machine this project was written
-> against. The web app talks **GRBL 1.1 over USB serial** and does not care
-> which board is on the other end, so an Arduino running GRBL (or
-> `grbl_servo_z`, which is what `pcb_gcode.py` emits for) works the same way.
 
 ---
 
+## 0. Parts list
 
-## 0. How the web app reaches this machine
+| Part | Qty | Notes |
+|------|-----|-------|
+| Arduino Uno (CH340 clones are fine) | 1 | runs grbl_servo_z |
+| 28BYJ-48 5 V stepper + ULN2003 driver board | 2 | X and Y |
+| SG90 (or MG90S) servo | 1 | pen lift on Z |
+| External 5 V supply, 2 A or more | 1 | servo and drivers; **not** the Uno's 5 V pin |
+| 470 µF capacitor | 1 | across the servo's 5 V / GND, recommended |
+| USB **data** cable | 1 | charge-only cables show no COM port |
+
+Flash the firmware from the Arduino IDE: install the library into
+`Documents\Arduino\libraries\grbl_servo_z` (remove any stock `grbl` library
+first), open *File → Examples → grbl_servo_z → grblUpload*, and upload. Retry
+if it reports `flash verification mismatch` — CH340 clones do that.
+
+---
+
+## 1. Wiring and firmware settings
+
+`pcb_gcode.py`, `grbl/profile.py` and the `SIM` port all match this build.
+Pins are read from the firmware source (`cpu_map.h`, `stepper.c`, `servo.c`),
+not its README, which still says D11 for the servo.
+
+| Part | Arduino pin | Notes |
+|------|-------------|-------|
+| X 28BYJ-48 via ULN2003: IN1 / IN2 / IN3 / IN4 | **D5 / D4 / D3 / D2** | half-step sequence written straight to `PORTD` |
+| Y 28BYJ-48 via ULN2003: IN1 / IN2 / IN3 / IN4 | **A3 / A2 / A1 / A0** | same sequence on `PORTC` |
+| SG90 signal (orange) | **D10** | Timer2 ISRs; D11 is not used |
+| SG90 V+ (red) / GND (brown) | external 5 V + / − | GND also to Arduino GND |
+| ULN2003 boards 5–12 V / GND | external supply | GND common with the Arduino |
+| D8, D9, D12, D13 | — | set as outputs at boot, unused (were the Z stepper) |
+| Limit switches, probe, cycle start/hold | — | none: the fork's limit and control pins are virtual |
+
+The firmware's defaults, and what the software assumes from them:
+
+| Setting | Firmware | Software |
+|---------|----------|----------|
+| Baud | 115200 | `profile.baud` 115200 |
+| RX buffer | 128 bytes | `profile.rx_buffer` 128 |
+| Pen | Z < 0 → down, Z ≥ 0 → up (`SERVO_Z_THRESHOLD_STEPS 0`) | pen down Z-0.5, up Z0.5 |
+| Servo travel | planned Z move; 1 mm at F200 = 300 ms | every Z move is `G1 … F200` |
+| `$100-$102` steps/mm | 250 | — |
+| `$110-$112` max rate | 500 mm/min | draw, travel and jog feeds 500 |
+| `$22` homing | 0 (no switches) | Home button disabled; zero X/Y by hand |
+| G54 work offset | kept in EEPROM across resets | cleared on every connect; Z zero refused |
+| `$21` hard limits | 0 — keep it off, or it alarms instantly | — |
+
+If you change `$110`/`$111` on the board, raise `travel_feed`/`draw_feed` in
+`pcb_gcode.py` and `grbl/profile.py` to match; Grbl clamps any F above them.
+
+---
+
+## 2. Connecting to TraceWorks
 
 Plug the controller into the PC running the backend with a **data** USB cable.
 That is the whole connection story: the backend owns the serial port, because
@@ -28,221 +76,43 @@ try the app without hardware, start the backend with `TRACEWORKS_SIM=1` and
 connect to the port named `SIM`.
 
 **Connecting resets the controller.** Opening the port toggles DTR and the
-board reboots, so work zero is cleared every session — set it on
-`/dashboard/device` after connecting, before plotting.
+board reboots with machine position 0 wherever the pen is. Grbl would bring
+back the last G54 work zero from EEPROM, which without homing points at an
+arbitrary spot, so TraceWorks clears it (`G10 L2 P1 X0 Y0 Z0`, `G92.1`) the
+moment the board announces itself. Work zero is therefore **where the pen
+sits when you connect** — put it over the board's corner first, or jog there
+and zero X + Y on `/dashboard/device`.
+
+**Never zero Z.** The servo switches on *machine* Z (below 0 is down), and a
+Z work offset shifts every G-code Z without moving that switch, so the pen
+would stay down between traces. The app refuses it.
 
 ---
 
-## 1. Parts list
-
-### Recommended (easiest): all-in-one board
-| Part | Notes |
-|------|-------|
-| **MKS DLC32** controller | ESP32 + stepper drivers + connectors on one board; FluidNC supports it out of the box |
-| 2 × **NEMA 17** stepper motors | one for X, one for Y |
-| 1 × **SG90 / MG90S** servo | pen up/down (lift) |
-| 5–12 V power supply | match your motors / board rating |
-| USB cable (data, not charge-only) | ESP32 ↔ PC for flashing and streaming |
-| Belts, pulleys, rails/frame | the mechanical plotter (kit or 3D-printed) |
-
-### Alternative (cheaper, more wiring): bare ESP32 + drivers
-| Part | Notes |
-|------|-------|
-| **ESP32 DevKit** board | the microcontroller |
-| CNC shield **or** 2 × stepper driver modules | **TMC2209** (quiet) or **A4988** (cheap) |
-| 2 × NEMA 17 steppers + 1 servo | same as above |
-| Power supply, USB cable, frame | same as above |
-
-> The ESP32 by itself **cannot** drive motors — its pins output weak logic
-> signals. The stepper **drivers** sit between the ESP32 and the motors. This is
-> why the all-in-one board is simpler for a first build.
-
----
-
-## 2. Flashing FluidNC onto the ESP32
-
-FluidNC is separate, ready-made software. Flashing = writing that firmware into
-the ESP32 over USB. Do it once (repeat only to update).
-
-### Easiest method — browser web installer (nothing to install on your PC)
-1. Plug the ESP32 / controller board into your PC with a **data** USB cable.
-2. Open **https://install.fluidnc.com** in **Chrome** or **Edge**
-   (uses the browser's Web Serial API — Firefox/Safari won't work).
-3. Click **Connect**, and pick the serial port for your board.
-   - On Windows the port looks like `COM5`. If none appears, install the USB
-     driver for your board's USB chip (usually **CP2102** or **CH340**).
-4. Choose the latest **FluidNC** release, then **Install / Flash**.
-5. Wait for it to finish (~1–2 min) and reboot the board.
-6. Still in the installer, open the **Terminal**/console and type:
-   ```
-   $I
-   ```
-   FluidNC should reply with its version — confirms the flash worked.
-
-### Alternative methods (optional)
-- **esptool** (command line): `esptool.py write_flash ...` with the release `.bin`.
-- **PlatformIO**: build from source (github.com/bdring/FluidNC) and upload.
-
-The web installer is by far the simplest — use it unless you have a reason not to.
-
----
-
-## 3. Configure your machine (`config.yaml`)
-
-After flashing, FluidNC needs a **config file** describing *your* machine —
-which ESP32 pin drives which motor, travel limits, steps/mm, etc. This is
-configuration, not programming. Upload it via the FluidNC web UI
-(Files page) or the installer terminal.
-
-> **Important:** the pin numbers below are a **starting point for a bare ESP32 +
-> external drivers**. They MUST match how *you* wired it. If you use an MKS
-> DLC32 (or another ready board), start from that board's official example at
-> **github.com/bdring/FluidNC/tree/main/example_configs** instead — those boards
-> use I2S/shift-register pins, not plain GPIO.
-
-### Starter config — 2-axis pen plotter (X, Y steppers + servo pen)
-
-```yaml
-name: "PCB Pen Plotter"
-board: "ESP32 DevKit"
-
-stepping:
-  engine: RMT          # standard GPIO stepping for a bare ESP32
-  idle_ms: 255
-  pulse_us: 4
-  dir_delay_us: 1
-
-# One pin disables all drivers (tie your drivers' EN pins together to it)
-axes:
-  shared_stepper_disable_pin: gpio.13:high
-
-  x:
-    steps_per_mm: 80          # 20T GT2 pulley + 1/16 microstep ≈ 80; TUNE THIS
-    max_rate_mm_per_min: 5000
-    acceleration_mm_per_sec2: 300
-    max_travel_mm: 300
-    homing:
-      cycle: 1
-      positive_direction: false
-      mpos_mm: 0
-      feed_mm_per_min: 300
-      seek_mm_per_min: 1500
-    motor0:
-      limit_all_pin: gpio.17:low:pu   # optional endstop; remove if none
-      hard_limits: false
-      standard_stepper:
-        step_pin: gpio.12
-        direction_pin: gpio.14
-
-  y:
-    steps_per_mm: 80          # TUNE THIS to match your mechanics
-    max_rate_mm_per_min: 5000
-    acceleration_mm_per_sec2: 300
-    max_travel_mm: 300
-    homing:
-      cycle: 1
-      positive_direction: false
-      mpos_mm: 0
-      feed_mm_per_min: 300
-      seek_mm_per_min: 1500
-    motor0:
-      limit_all_pin: gpio.16:low:pu   # optional endstop; remove if none
-      hard_limits: false
-      standard_stepper:
-        step_pin: gpio.26
-        direction_pin: gpio.15
-
-  # Pen lift on "Z" via a hobby servo. The G-code uses Z moves:
-  #   G1 Z0.5 = pen up,  G1 Z-0.5 = pen down (see pcb_gcode.py CONFIG).
-  #
-  # WARNING: the mapping below is the OLD Z0/Z5 convention and no longer
-  # matches what the generator emits. See "Two firmware paths" below before
-  # using this config.
-  z:
-    steps_per_mm: 100
-    max_travel_mm: 5           # matches pen_up_z = 5 mm in pcb_gcode.py
-    motor0:
-      servo:
-        pwm_hz: 50
-        output_pin: gpio.27
-        min_pulse_us: 1000     # pen DOWN position  (Z = 0)
-        max_pulse_us: 2000     # pen UP position    (Z = max_travel)
-
-# No spindle/laser on a pen plotter
-start:
-  must_home: false            # set true once endstops are wired & tested
-```
-
-### After uploading the config
-- Send `$$` in the terminal to list settings and confirm it loaded.
-- **Jog carefully** a few mm on X and Y and check direction; if an axis moves
-  the wrong way, flip `direction_pin` polarity or swap motor wiring.
-- Tune `steps_per_mm` until a commanded 100 mm move measures 100 mm.
-- Adjust the servo `min_pulse_us` / `max_pulse_us` so the pen clearly lifts and
-  touches. These must line up with `pen_up_z` / `pen_down_z` in `pcb_gcode.py`.
-
----
-
-## Two firmware paths, two Z conventions
-
-The generator now targets **grbl_servo_z** (Grbl 1.1f on an Arduino, Z driven
-as an SG90 by `servo.c`). That firmware decides pen state from the sign of the
-machine Z position:
-
-```c
-if (z_steps < SERVO_Z_THRESHOLD_STEPS) { pen down; } else { pen up; }
-```
-
-with the threshold at `0` and the comparison strictly less than. So
-`pcb_gcode.py` emits `Z-0.5` for down and `Z0.5` for up, both as timed `G1`
-moves at `z_feed` (200 mm/min), because Z is a fully planned axis and the move's
-duration is what gives the servo time to travel. No dwell is needed.
-
-**The FluidNC config above predates this.** It maps a positive Z *range*
-(`0 .. max_travel_mm`) onto the servo pulse range, with `Z = 0` meaning pen
-DOWN — the opposite sign convention. Sending the current G-code to it
-unchanged will not plot correctly: `Z-0.5` falls outside the declared axis
-travel.
-
-If you are on FluidNC rather than grbl_servo_z, you need to either reconfigure
-that axis to cover negative Z, or set `pen_up_z` / `pen_down_z` in
-`pcb_gcode.py` back to `5.0` / `0.0` for that machine. The Z convention is a
-per-machine property, and only the grbl_servo_z path is currently exercised by
-the test suite (`tests/test_servo_gcode.py`).
-
----
-
-## 4. First-plot checklist (safe order)
+## 3. First-plot checklist (safe order)
 
 Do these in order — each step catches problems before they can damage anything.
 
-1. **Offline visual** — `python pcb_gcode_preview.py`
-   Confirms the toolpath geometry looks right (no hardware).
-2. **Firmware validation** — `python pcb_send.py --port COM5 --check`
-   FluidNC Check Mode (`$C`): parses every line, **no motion**. Fix any
-   `error:N` before continuing.
-3. **Pen-up dry run** — raise/disconnect the pen, then
-   `python pcb_send.py --port COM5`
-   Watch that the motion stays within the bed and matches the preview.
-4. **Real plot** — lower the pen and run it for real.
-   `python pcb_send.py --port COM5`
+1. **Offline visual** — open the board in TraceWorks and check the toolpath
+   preview (or `python pcb_gcode_preview.py`). No hardware needed.
+2. **Pen test** — on `/dashboard/device`, jog Z down and up. The servo should
+   drop below Z0 and lift at Z0 and above. If it never moves, check the
+   signal wire is on **D10**.
+3. **Set work zero** — jog the pen to the board's bottom-left corner and press
+   *zero X + Y*. There is no homing on this firmware; Z is never zeroed.
+4. **Dry check** — on the board page, run the check (Grbl check mode, `$C`):
+   every line is parsed, **no motion**. Fix any `error:N` before continuing.
+5. **Pen-up dry run** — take the pen out and plot. Watch that the motion stays
+   within the bed and matches the preview.
+6. **Real plot** — put the pen back and plot for real.
 
-Replace `COM5` with your board's port (Windows: Device Manager → Ports;
-Linux/Mac: `/dev/ttyUSB0` or `/dev/tty.usbserial-*`).
-
----
-
-## 5. WiFi option (no USB cable)
-
-FluidNC also serves a **browser web UI over WiFi**. Once you set WiFi
-credentials in the config (or via the terminal), you can open the ESP32's web
-page to jog the machine, upload a `.gcode` file, and watch a built-in toolpath
-visualizer — an alternative to `pcb_send.py` over USB.
+From the command line, `python pcb_send.py --port COM3 --check` and
+`python pcb_send.py --port COM3` do steps 4 and 6. Replace `COM3` with your
+board's port (Device Manager → Ports (COM & LPT) → "USB-SERIAL CH340").
 
 ---
 
 ## Reference links
-- FluidNC web installer — https://install.fluidnc.com
-- FluidNC source & docs — https://github.com/bdring/FluidNC
-- FluidNC wiki (config, senders) — http://wiki.fluidnc.com
-- Example board configs — https://github.com/bdring/FluidNC/tree/main/example_configs
+- grbl_servo_z — https://github.com/moi-script/grbl_servo_z
+- Grbl 1.1 settings (`$$`) — https://github.com/gnea/grbl/wiki/Grbl-v1.1-Configuration
+- Grbl 1.1 error and alarm codes — https://github.com/gnea/grbl/wiki/Grbl-v1.1-Interface

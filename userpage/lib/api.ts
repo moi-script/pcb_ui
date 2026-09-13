@@ -209,7 +209,8 @@ export const api = {
       `/machine/last?email=${encodeURIComponent(email)}`
     ),
 
-  jog: (axis: string, distance: number, feed = 1000) =>
+  // 500 mm/min is grbl_servo_z's max rate ($110-$112); faster is clamped.
+  jog: (axis: string, distance: number, feed = 500) =>
     req<{ ok: boolean }>("/machine/jog", {
       method: "POST",
       body: JSON.stringify({ axis, distance, feed }),

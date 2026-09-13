@@ -1,4 +1,4 @@
-"""Stream a G-code file to a GRBL / FluidNC controller over USB serial.
+"""Stream a G-code file to a GRBL controller over USB serial.
 
 Uses the standard GRBL send-response handshake: send one line, wait for the
 controller's "ok" before sending the next. Any "error:N" reply is reported.
@@ -7,7 +7,7 @@ controller's "ok" before sending the next. Any "error:N" reply is reported.
     python pcb_send.py --port COM5 --check         # validate only (no motion)
     python pcb_send.py --dry-run                    # parse the file, open no port
 
---check toggles GRBL/FluidNC Check Mode ($C): every line is parsed and
+--check toggles GRBL Check Mode ($C): every line is parsed and
 validated but no motors move -- a safe way to confirm the file is accepted by
 the firmware before running it.
 """
@@ -65,7 +65,7 @@ def stream(lines, port, baud, check=False, verbose=False):
         print(f"[FAILED] could not open {port}: {e}")
         return 2
     try:
-        # Wake GRBL/FluidNC and discard the startup banner.
+        # Wake GRBL and discard the startup banner.
         ser.write(b"\r\n\r\n")
         time.sleep(2)
         ser.reset_input_buffer()
@@ -96,7 +96,7 @@ def stream(lines, port, baud, check=False, verbose=False):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Stream G-code to GRBL/FluidNC.")
+    ap = argparse.ArgumentParser(description="Stream G-code to GRBL.")
     ap.add_argument("file", nargs="?", default="labExam.gcode",
                     help="G-code file to send (default: labExam.gcode)")
     ap.add_argument("--port", help="serial port, e.g. COM5 or /dev/ttyUSB0")

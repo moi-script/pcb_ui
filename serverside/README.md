@@ -2,7 +2,7 @@
 
 A simple one-layer **PCB "drawer"**: read a KiCad board, extract the copper
 traces, and turn them into travel-optimized **G-code** you can plot on a
-pen-plotter / small CNC driven by a microcontroller (GRBL / FluidNC).
+pen-plotter / small CNC driven by a microcontroller (GRBL — an Arduino running grbl_servo_z).
 
 Aimed at hobby / student **mini projects**, not professional copper milling.
 
