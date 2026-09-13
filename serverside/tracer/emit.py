@@ -32,6 +32,17 @@ def bounds(strokes: list[Stroke]) -> tuple[float, float, float, float]:
     return (min(xs), min(ys), max(xs), max(ys))
 
 
+def anchor_top_left(strokes: list[Stroke]) -> list[Stroke]:
+    """Shift strokes so their top-left corner is (0, 0) and they hang in -Y.
+
+    Strokes are stored Y-up from the image's bottom edge. The pen is parked
+    at the top-left of the bed, which is work zero, so the plot starts at
+    the image's top edge and runs down. Same rule as pcb_gcode._to_origin.
+    """
+    minx, _miny, _maxx, maxy = bounds(strokes)
+    return [[(x - minx, y - maxy) for x, y in s] for s in strokes]
+
+
 def _length(s: Stroke) -> float:
     return sum(math.dist(a, b) for a, b in zip(s, s[1:]))
 
@@ -76,11 +87,12 @@ def generate_from_strokes(strokes: list[Stroke], cfg: dict = CONFIG,
     z_feed = cfg.get("z_feed", 200)
 
     minx, miny, maxx, maxy = bounds(strokes)
+    strokes = anchor_top_left(strokes)
     out = [
         f"; {label} - traced centreline pen plot",
         f"; extent: {_f(maxx - minx)} x {_f(maxy - miny)} mm",
         f"; strokes: {len(strokes)}",
-        "; Set zero before run: G10 L20 P1 X0 Y0 Z0",
+        "; work zero = top-left corner; the plot runs down in -Y",
         "G21",   # millimetres
         "G90",   # absolute
         "G17",   # XY plane
@@ -110,8 +122,9 @@ def emit_frame(bbox: tuple[float, float, float, float],
     find out that the drawing runs off the edge of the work.
     """
     minx, miny, maxx, maxy = bbox
-    corners = [(minx, miny), (maxx, miny), (maxx, maxy),
-               (minx, maxy), (minx, miny)]
+    # Anchored like the plot: top-left at (0, 0), hanging in -Y.
+    w, h = maxx - minx, maxy - miny
+    corners = [(0.0, 0.0), (w, 0.0), (w, -h), (0.0, -h), (0.0, 0.0)]
     out = [
         "; alignment frame - pen stays up",
         "G21", "G90", "G17",

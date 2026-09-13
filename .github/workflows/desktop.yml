@@ -67,4 +67,5 @@ jobs:
           files: |
             desktop/dist/TraceWorks-Setup-*.exe
             desktop/dist/TraceWorks-Setup.exe
-          generate_release_notes: true
+          # GitHub's notes generator returned 500s for v0.1.1; skip it.
+          generate_release_notes: false

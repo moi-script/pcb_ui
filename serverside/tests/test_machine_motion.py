@@ -94,7 +94,7 @@ def test_a_saved_zero_does_not_survive_reconnecting(client):
     # of a plot would travel off to it. A fresh boot must start from the pen.
     settle(client)
     client.post("/machine/jog", json={"axis": "X", "distance": 30.0, "feed": 1000})
-    client.post("/machine/jog", json={"axis": "Y", "distance": 20.0, "feed": 1000})
+    client.post("/machine/jog", json={"axis": "Y", "distance": -20.0, "feed": 1000})
     settle(client, timeout=15.0)
     assert client.post("/machine/zero", json={"axes": "XY"}).status_code == 200
     settle(client)
@@ -128,3 +128,21 @@ def test_motion_endpoints_are_409_when_disconnected(client):
     ]:
         r = client.post(path, json=body) if body else client.post(path)
         assert r.status_code == 409, path
+
+
+def test_disconnect_stops_the_machine_instead_of_letting_it_run_on(client):
+    # Closing the port alone leaves Grbl executing everything already in its
+    # planner and RX buffer: the plotter keeps drawing after "Disconnect".
+    settle(client)
+    assert client.post("/machine/jog",
+                       json={"axis": "X", "distance": 80.0, "feed": 200}).status_code == 200
+    time.sleep(0.5)
+    board = session.streamer.transport
+    assert board.state in ("Jog", "Run")
+
+    assert client.post("/machine/disconnect").status_code == 200
+
+    assert board._queue == [], "moves were left queued on the controller"
+    where = list(board.pos)
+    board.tick(2.0)  # time passes on the board after we let go of it
+    assert board.pos == where, "the machine kept moving after disconnect"

@@ -80,8 +80,12 @@ board reboots with machine position 0 wherever the pen is. Grbl would bring
 back the last G54 work zero from EEPROM, which without homing points at an
 arbitrary spot, so TraceWorks clears it (`G10 L2 P1 X0 Y0 Z0`, `G92.1`) the
 moment the board announces itself. Work zero is therefore **where the pen
-sits when you connect** — put it over the board's corner first, or jog there
+sits when you connect** — put it over the board's top-left corner first, or jog there
 and zero X + Y on `/dashboard/device`.
+
+**The plot starts at the top-left and runs down.** Work zero is the drawing's
+top-left corner: X runs right from it and Y runs *negative*, down the bed.
+Jogging Y above the zero, or a file that reaches above it, is refused.
 
 **Never zero Z.** The servo switches on *machine* Z (below 0 is down), and a
 Z work offset shifts every G-code Z without moving that switch, so the pen
@@ -98,7 +102,7 @@ Do these in order — each step catches problems before they can damage anything
 2. **Pen test** — on `/dashboard/device`, jog Z down and up. The servo should
    drop below Z0 and lift at Z0 and above. If it never moves, check the
    signal wire is on **D10**.
-3. **Set work zero** — jog the pen to the board's bottom-left corner and press
+3. **Set work zero** — jog the pen to the board's top-left corner and press
    *zero X + Y*. There is no homing on this firmware; Z is never zeroed.
 4. **Dry check** — on the board page, run the check (Grbl check mode, `$C`):
    every line is parsed, **no motion**. Fix any `error:N` before continuing.

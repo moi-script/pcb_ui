@@ -180,11 +180,13 @@ def _xy(lines):
 
 
 def test_the_board_is_plotted_from_its_own_corner_not_the_kicad_sheet():
-    """The pen starts at work zero, and work zero is the corner of the board.
+    """The pen starts at work zero, and work zero is the board's TOP-left.
 
     A KiCad file places the board wherever it sits on the sheet. Emitting
     those numbers sends the pen a hundred millimetres away to look for
     copper that is not there — and off the end of a 100 mm bed on the way.
+    The operator parks the pen at the top of the bed, so the plot hangs
+    below it: X runs 0 .. width, Y runs 0 .. -height.
     """
     cfg = dict(pcb_gcode.CONFIG)
     cfg["layer"] = "F.Cu"
@@ -192,10 +194,10 @@ def test_the_board_is_plotted_from_its_own_corner_not_the_kicad_sheet():
     xs, ys = _xy(lines)
 
     assert min(xs) == 0.0
-    assert min(ys) == 0.0
-    # The drawing keeps its own size; only its position changed.
+    assert max(ys) == 0.0
+    # The drawing keeps its own size and orientation; only its position changed.
     assert max(xs) == 20.0
-    assert max(ys) == 10.0
+    assert min(ys) == -10.0
 
 
 def test_a_normalised_board_fits_the_bed_the_sheet_coordinates_did_not():
@@ -231,8 +233,10 @@ def test_ordering_starts_from_the_pen_not_from_a_corner_of_the_sheet():
     lines = pcb_gcode.generate_gcode(OFFSET_TRACKS, cfg)
 
     first_travel = next(l for l in lines if l.startswith("G0 X"))
-    # The lower track (y=0 after normalising) is nearest work zero.
+    # The upper track (y=0 after normalising) is nearest work zero.
     assert first_travel.startswith("G0 X0 Y0")
+    # ...and the job comes back to where the pen started.
+    assert [l for l in lines if l.startswith("G0 ")][-1].startswith("G0 X0 Y0")
 
 
 # --- the rest of the machine settings, against grbl_servo_z's defaults --------

@@ -1,14 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Logo from "@/components/Logo";
 import { api, type PortInfo } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useMachine } from "@/lib/machine";
 
 export default function Connect() {
   const { session } = useAuth();
   const router = useRouter();
+  const { snap, connected } = useMachine();
+  // Connecting reopens the port, which reboots the Arduino: never mid-plot.
+  const plotting =
+    snap?.job?.state === "running" || snap?.job?.state === "paused";
 
   const [ports, setPorts] = useState<PortInfo[]>([]);
   const [bauds, setBauds] = useState<number[]>([115200]);
@@ -96,6 +102,24 @@ export default function Connect() {
             </p>
           </div>
 
+          {connected && (
+            <div className="mt-8 border border-copper px-4 py-3 text-sm">
+              <p className="text-ink">
+                Already connected to{" "}
+                <span className="font-mono">{snap?.conn.port}</span>
+                {plotting ? ` and plotting '${snap?.job?.name}'.` : "."}
+              </p>
+              <p className="mt-1 text-xs text-muted">
+                {plotting
+                  ? "Connecting again would reset the controller and end the plot. Stop it first."
+                  : "Connecting again resets the controller."}
+              </p>
+              <Link href="/dashboard/device" className="btn btn-primary mt-3">
+                Go to the machine →
+              </Link>
+            </div>
+          )}
+
           <div className="panel ticked mt-8 p-6">
             <form onSubmit={connect}>
               <div className="flex items-baseline justify-between">
@@ -177,15 +201,16 @@ export default function Connect() {
               <button
                 className="btn btn-copper mt-5 w-full"
                 type="submit"
-                disabled={!port || busy}
+                disabled={!port || busy || plotting}
               >
-                {busy ? "connecting…" : "Connect"}
+                {busy ? "connecting…" : plotting ? "plot running" : "Connect"}
               </button>
             </form>
 
             <p className="mt-5 border-t border-line pt-4 text-xs text-faint">
               Connecting resets the controller and puts work zero where the pen
-              is now. Put the pen over the board&apos;s corner first, or set zero
+              is now. Park the pen at the top-left of where the board goes (the
+              plot runs down from there), or set zero
               on the Machine page before plotting.
             </p>
           </div>

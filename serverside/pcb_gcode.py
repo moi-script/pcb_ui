@@ -1,5 +1,8 @@
 """Convert extracted PCB wiring into G-code for a pen-plotter / drawing machine.
 
+Work zero is the board's top-left corner, where the pen is parked, and the
+plot runs down from it in -Y. See `_to_origin`.
+
 Flow:  KiCad file  ->  pcb_read.wiring_data  ->  G-code  ->  GRBL (grbl_servo_z)
 
 Each track segment becomes a pen-up travel to its start, a pen-down, a draw
@@ -46,12 +49,17 @@ def _y(y):
 
 
 def _to_origin(pairs):
-    """Shift every point so the drawing's own bottom-left corner is (0, 0)."""
+    """Shift every point so the drawing's own TOP-left corner is (0, 0).
+
+    The operator parks the pen at the top-left of the bed and connects, so
+    that is work zero: X runs right from it (0 .. width) and the plot hangs
+    below it (Y 0 .. -height). Orientation is untouched, only position.
+    """
     if not pairs:
         return pairs
     xs = [p[0] for pair in pairs for p in pair]
     ys = [p[1] for pair in pairs for p in pair]
-    dx, dy = min(xs), min(ys)
+    dx, dy = min(xs), max(ys)
     if dx == 0 and dy == 0:
         return pairs
     return [

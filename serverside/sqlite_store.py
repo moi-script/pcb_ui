@@ -153,6 +153,9 @@ class Collection:
             self._write(after, replace=True)
         return after if return_document == ReturnDocument.AFTER else before
 
+    def update_one(self, flt: dict, update: dict):
+        self.find_one_and_update(flt, update)
+
     def replace_one(self, flt: dict, replacement: dict, upsert: bool = False):
         with self.store.lock:
             current = self.find_one(flt)

@@ -57,7 +57,7 @@ from pymongo import ReturnDocument
 
 import db
 from grbl import ports as grbl_ports
-from grbl.limits import AXIS_INDEX, LimitError, check_program
+from grbl.limits import AXIS_INDEX, EPS, LimitError, check_program, program_extents
 from grbl.profile import DEFAULT_PROFILE
 from grbl.protocol import Realtime, encode_jog, encode_zero
 from job import load_lines
@@ -305,6 +305,43 @@ def build_board_from_strokes(strokes: list, name: str, filename: str,
 # ----------------------------------------------------------------- serializers
 def out_user(doc: dict) -> dict:
     return {"name": doc["name"], "email": doc["email"]}
+
+
+def refresh_legacy_gcode(doc: dict) -> dict:
+    """Rebuild G-code saved before work zero moved to the top-left corner.
+
+    Old boards hang above a bottom-left zero (Y up to +height); the bed now
+    runs 0 .. -height below the pen, so that file would be refused or send
+    the pen up off the bed. The stored geometry is unaffected, so the G-code
+    is regenerated from it and saved back — once, the first time the board
+    is opened or run. A board already top-left is returned untouched.
+    """
+    extents = program_extents((doc.get("gcode") or "").splitlines())
+    if extents is None or extents[3] <= EPS:
+        return doc
+
+    fields: dict = {}
+    if doc.get("source") == "image" and doc.get("strokes"):
+        strokes = [[tuple(p) for p in s] for s in doc["strokes"]]
+        lines = emit.generate_from_strokes(strokes, label=doc["name"])
+        fields["gcode"] = "\n".join(lines) + "\n"
+        fields["gcodeLines"] = len(lines)
+        fields["frameGcode"] = "\n".join(
+            emit.emit_frame(emit.bounds(strokes))) + "\n"
+    elif doc.get("tracks"):
+        wiring = [{"type": "track", "layer": t["layer"],
+                   "start": (t["x1"], t["y1"]), "end": (t["x2"], t["y2"])}
+                  for t in doc["tracks"]]
+        cfg = dict(CONFIG)
+        cfg["layer"] = doc["layer"]
+        lines = generate_gcode(wiring, cfg)
+        fields["gcode"] = "\n".join(lines) + "\n"
+        fields["gcodeLines"] = len(lines)
+    else:
+        return doc
+
+    db.boards.update_one({"_id": doc["_id"]}, {"$set": fields})
+    return {**doc, **fields}
 
 
 def out_board(doc: dict, full: bool = False) -> dict:
@@ -577,7 +614,7 @@ def get_board(board_id: str):
     doc = db.boards.find_one({"_id": oid})
     if not doc:
         raise HTTPException(404, "Board not found.")
-    return out_board(doc, full=True)
+    return out_board(refresh_legacy_gcode(doc), full=True)
 
 
 @app.patch("/board/{board_id}")
@@ -664,6 +701,13 @@ def machine_ports():
 
 @app.post("/machine/connect")
 def machine_connect(body: ConnectRequest):
+    job = session.job
+    if job is not None and job.state in ("running", "paused"):
+        # Reopening the port reboots the Arduino: the plot would die halfway
+        # and the pen would be left wherever it was.
+        raise HTTPException(
+            409, f"A plot is running on {session.state.port} ('{job.name}'). "
+                 "Stop it before connecting again.")
     try:
         transport = make_transport(body.port, body.baud)
     except Exception as exc:  # noqa: BLE001 - pyserial raises many shapes
@@ -942,6 +986,7 @@ def machine_run(body: RunRequest):
     board = db.boards.find_one({"_id": oid})
     if not board:
         raise HTTPException(404, "Board not found.")
+    board = refresh_legacy_gcode(board)
     gcode = board.get("gcode")
     if not gcode:
         raise HTTPException(400, "This board has no G-code to send.")

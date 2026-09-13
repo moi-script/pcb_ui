@@ -33,8 +33,30 @@ def test_every_point_is_emitted_in_order():
     draws = [ln for ln in lines if ln.startswith("G1 X")]
     # the first point is the rapid; the remaining two are drawn
     assert len(draws) == 2
-    assert "X10" in draws[0] and "Y0" in draws[0]
-    assert "X10" in draws[1] and "Y10" in draws[1]
+    # Anchored at the top-left: the square's top edge is Y0, the rest hangs below.
+    assert "X10" in draws[0] and "Y-10" in draws[0]
+    assert "X10" in draws[1] and "Y0" in draws[1]
+
+
+def _ys(lines: list[str]) -> list[float]:
+    import re
+    return [float(v) for ln in lines
+            for v in re.findall(r"Y(-?[\d.]+)", ln.split(";", 1)[0])]
+
+
+def test_the_plot_hangs_below_the_pen_from_the_top_left():
+    # An image's strokes are stored Y-up from its bottom edge; the pen starts
+    # at the top, so every Y is at or below zero and the top edge is Y0.
+    lines = emit.generate_from_strokes(TWO)
+    ys = _ys(lines)
+    assert max(ys) == 0.0
+    assert min(ys) == -20.0
+
+
+def test_the_frame_matches_the_plot():
+    minx, miny, maxx, maxy = emit.bounds(TWO)
+    ys = _ys(emit.emit_frame((minx, miny, maxx, maxy)))
+    assert max(ys) == 0.0 and min(ys) == -20.0
 
 
 def test_job_ends_pen_up():

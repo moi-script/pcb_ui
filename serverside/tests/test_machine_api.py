@@ -66,3 +66,20 @@ def test_run_without_a_connection_is_409(client):
 def test_pause_without_a_job_is_409(client):
     client.post("/machine/connect", json={"port": "SIM", "baud": 115200})
     assert client.post("/machine/pause").status_code == 409
+
+
+def test_connecting_again_mid_plot_is_refused_not_a_reset(client):
+    # Connect reopens the port, which reboots the Arduino and kills the plot.
+    # A Connect button pressed while a board is plotting must not do that.
+    from machine import session
+    assert client.post("/machine/connect",
+                       json={"port": "SIM", "baud": 115200}).status_code == 200
+    lines = ["G21 G90"] + [f"G1 X{i % 40} Y-{i % 30} F200" for i in range(200)]
+    session.start_job(lines, check=False, name="busy")
+    try:
+        r = client.post("/machine/connect", json={"port": "SIM", "baud": 115200})
+        assert r.status_code == 409
+        assert "plot" in r.json()["detail"].lower()
+        assert session.job.state == "running"
+    finally:
+        session.disconnect()

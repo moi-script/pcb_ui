@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
 import { useMachine } from "@/lib/machine";
 
 export default function MachinePage() {
-  const { snap, console: lines, connected, live } = useMachine();
+  const { snap, console: lines, connected, live, ready } = useMachine();
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
 
@@ -27,6 +27,16 @@ export default function MachinePage() {
     } catch (e) {
       setError((e as Error).message);
     }
+  }
+
+  // Not yet heard from the server is not the same as "no machine". Showing
+  // a Connect button here mid-plot invited a reconnect that reset the board.
+  if (!ready) {
+    return (
+      <div className="mx-auto max-w-4xl px-6 py-8">
+        <span className="tlabel animate-pulse">reading the machine…</span>
+      </div>
+    );
   }
 
   if (!connected) {
@@ -105,8 +115,9 @@ export default function MachinePage() {
             <span className="tlabel">Work zero</span>
             <p className="mt-2 text-xs text-muted">
               Connecting reset the controller and put work zero where the pen
-              is. To plot somewhere else, jog to the corner of the board, then
-              set it. Z is the pen servo and is never zeroed.
+              is. A plot starts there, at its top-left corner, and runs down.
+              To start somewhere else, jog there and zero X + Y. Z is the pen
+              servo and is never zeroed.
             </p>
             <div className="mt-4 grid grid-cols-3 gap-1.5">
               {["X", "Y", "XY"].map((axes) => (
@@ -128,7 +139,7 @@ export default function MachinePage() {
               <button
                 className="btn btn-ghost flex-1"
                 disabled
-                title="No limit switches on grbl_servo_z: jog to the corner and zero instead"
+                title="No limit switches on grbl_servo_z: jog to the top-left corner and zero X + Y instead"
               >
                 Home ($H)
               </button>
@@ -140,7 +151,7 @@ export default function MachinePage() {
               </button>
             </div>
             <p className="mt-2 font-mono text-[0.7rem] text-faint">
-              no homing on this firmware — jog to the corner, then zero X + Y
+              no homing on this firmware — jog to the top-left corner, then zero X + Y
             </p>
           </div>
 

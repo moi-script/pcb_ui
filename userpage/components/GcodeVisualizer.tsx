@@ -300,13 +300,22 @@ export default function GcodeVisualizer({
     // Big enough to read at a glance without the lifts dwarfing the drawing.
     const defaultLift = Math.max(span * 0.05, 2);
 
-    // Bed grid, 10 mm cells, anchored at the machine origin like a real bed
-    // and stretched to cover the work wherever it sits on it.
-    const reach = Math.max(maxX, maxY, bounds?.maxX ?? 0, bounds?.maxY ?? 0, 10);
+    // Bed grid, 10 mm cells, anchored at work zero like a real bed and
+    // stretched to cover the work wherever it sits on it. Work zero is the
+    // top-left corner, so a plot hangs below it in -Y; older files that sit
+    // above a bottom-left zero still get a grid under them.
+    const below = Math.min(minY, bounds?.minY ?? 0) < 0;
+    const reach = Math.max(
+      maxX,
+      bounds?.maxX ?? 0,
+      below ? -Math.min(minY, bounds?.minY ?? 0) : Math.max(maxY, bounds?.maxY ?? 0),
+      10,
+    );
     const bed = Math.ceil((reach * 1.1) / 10) * 10;
+    const ySign = below ? -1 : 1;
     const grid = new THREE.GridHelper(bed, bed / 10, COLOR.gridEdge, COLOR.grid);
     grid.rotation.x = Math.PI / 2; // GridHelper lies in XZ; put it in XY
-    grid.position.set(bed / 2, bed / 2, 0);
+    grid.position.set(bed / 2, (ySign * bed) / 2, 0);
     scene.add(grid);
 
     const axis = (
@@ -323,7 +332,7 @@ export default function GcodeVisualizer({
     };
     const axisGeoms = [
       axis([0, 0, 0], [bed, 0, 0], COLOR.axisX),
-      axis([0, 0, 0], [0, bed, 0], COLOR.axisY),
+      axis([0, 0, 0], [0, ySign * bed, 0], COLOR.axisY),
       axis([0, 0, 0], [0, 0, span * 0.2], COLOR.axisZ),
     ];
 

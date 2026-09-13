@@ -49,7 +49,9 @@ def _sim_transport() -> Transport:
         TICK = 0.01
 
         def __init__(self) -> None:
-            super().__init__(eeprom=_SIM_EEPROM)
+            # travel=None: soft limits off, as grbl_servo_z ships ($20=0).
+            # The app's own envelope checks are what keep a plot on the bed.
+            super().__init__(eeprom=_SIM_EEPROM, travel=None)
             self._lock = threading.RLock()
             self._stop = threading.Event()
             self._clock = threading.Thread(
@@ -443,6 +445,18 @@ class Session:
             self.job.error = "disconnected"
         if self.streamer is not None:
             self.streamer.stop()
+            if self.streamer.connected:
+                # Closing the port does not stop Grbl: it goes on executing
+                # every move already in its planner and RX buffer, so the
+                # plotter kept drawing after Disconnect. A soft reset halts
+                # it at once, drops the queue, and grbl_servo_z's mc_reset()
+                # lifts the pen. Position is lost, but the next connect
+                # reboots the board and starts from the pen anyway.
+                try:
+                    self.streamer.send_realtime(Realtime.SOFT_RESET)
+                    time.sleep(0.1)  # let the byte leave before the port closes
+                except Exception:  # noqa: BLE001 - a dead link is already stopped
+                    pass
             try:
                 self.streamer.transport.close()
             except Exception:

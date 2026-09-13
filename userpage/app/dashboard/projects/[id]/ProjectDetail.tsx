@@ -827,7 +827,7 @@ function BedFit({ width, height }: { width: number; height: number }) {
         className={`mt-1.5 text-sm ${fits ? "text-muted" : "text-danger"}`}
       >
         {fits
-          ? `This board is ${width} × ${height} mm, and plots from the corner you set as work zero.`
+          ? `This board is ${width} × ${height} mm, and plots down from work zero, its top-left corner.`
           : `This board is ${width} × ${height} mm and will not fit. Re-route it smaller, or trace it at a smaller size.`}
       </p>
     </div>

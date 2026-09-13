@@ -20,7 +20,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const { session, ready, signOut } = useAuth();
-  const { snap, connected, live } = useMachine();
+  const { snap, connected, live, ready: machineReady } = useMachine();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -133,11 +133,13 @@ export default function DashboardLayout({
               <span className={`dot ${live ? "dot-live" : ""}`} />
               {connected
                 ? `${snap?.conn.port} · ${snap?.state}`
+                : !machineReady
+                ? "…"
                 : live
                 ? "no machine"
                 : "server offline"}
             </Link>
-            {!connected && (
+            {machineReady && !connected && (
               <Link href="/connect" className="btn btn-copper !px-3 !py-1.5">
                 Connect device
               </Link>

@@ -27,6 +27,17 @@ def _travel(profile: Profile, axis: str) -> float:
     return {"X": profile.travel_x, "Y": profile.travel_y, "Z": profile.travel_z}[axis]
 
 
+def envelope(profile: Profile, axis: str) -> tuple[float, float]:
+    """(low, high) work coordinates an axis may reach.
+
+    Work zero is the TOP-left of the bed, where the pen is parked: X runs
+    right to +travel_x, Y runs down to -travel_y. Z is the pen servo, which
+    grbl_servo_z drops only below machine Z0, so it spans both sides of 0.
+    """
+    limit = _travel(profile, axis)
+    return {"X": (0.0, limit), "Y": (-limit, 0.0), "Z": (-limit, limit)}[axis]
+
+
 def check_jog(
     profile: Profile,
     mpos: tuple[float, float, float],
@@ -38,11 +49,8 @@ def check_jog(
     if axis not in AXIS_INDEX:
         raise LimitError(f"unknown axis {axis!r}; expected X, Y, or Z")
 
-    limit = _travel(profile, axis)
+    floor, limit = envelope(profile, axis)
     target = mpos[AXIS_INDEX[axis]] + distance
-    # Z is the pen servo, not a bed axis. grbl_servo_z drops the pen only
-    # below machine Z0, so Z's envelope runs the same distance under zero.
-    floor = -limit if axis == "Z" else 0.0
 
     if target < floor - EPS:
         raise LimitError(
@@ -115,14 +123,12 @@ def check_program(profile: Profile, lines: list[str]) -> None:
         return
     minx, maxx, miny, maxy = extents
 
-    for axis, low, high, limit in (
-        ("X", minx, maxx, profile.travel_x),
-        ("Y", miny, maxy, profile.travel_y),
-    ):
-        if low < -EPS:
+    for axis, low, high in (("X", minx, maxx), ("Y", miny, maxy)):
+        floor, limit = envelope(profile, axis)
+        if low < floor - EPS:
             raise LimitError(
-                f"this file reaches {axis}{low:g} mm, left of the 0 mm edge "
-                f"of the bed"
+                f"this file reaches {axis}{low:g} mm, past the {floor:g} mm "
+                f"edge of the bed"
             )
         if high > limit + EPS:
             raise LimitError(

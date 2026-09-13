@@ -77,12 +77,14 @@ class GrblSim:
         self,
         rx_buffer: int = 128,
         planner_blocks: int = 15,
-        travel: tuple[float, float, float] = (300.0, 200.0, 5.0),
+        # Soft limits ($20=1) over this envelope; None models $20=0, which
+        # is how grbl_servo_z ships: no alarm, whatever the target.
+        travel: tuple[float, float, float] | None = (300.0, 200.0, 5.0),
         eeprom: dict | None = None,
     ) -> None:
         self.rx_buffer = rx_buffer
         self.planner_blocks = planner_blocks
-        self.travel = list(travel)
+        self.travel = list(travel) if travel is not None else None
 
         # What survives a reboot. Grbl keeps the G54 offset in EEPROM and
         # reads it back on boot, while machine position starts again at 0.
@@ -341,7 +343,7 @@ class GrblSim:
             self._reply("ok", cost)
             return
 
-        for i, axis_travel in enumerate(self.travel):
+        for i, axis_travel in enumerate(self.travel or ()):
             if target[i] < -1e-6 or target[i] > axis_travel + 1e-6:
                 self._queue.clear()
                 self._reset_acks()
