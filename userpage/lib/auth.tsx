@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "./api";
+import { DESKTOP, DESKTOP_USER } from "./desktop";
 
 /*
   Session backed by the Python API + MongoDB.
@@ -46,6 +47,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    // The desktop app is one person's workbench: no sign-in, one local user.
+    if (DESKTOP) {
+      setSession(DESKTOP_USER);
+      setReady(true);
+      return;
+    }
     try {
       const raw = localStorage.getItem(KEY);
       if (raw) setSession(JSON.parse(raw));

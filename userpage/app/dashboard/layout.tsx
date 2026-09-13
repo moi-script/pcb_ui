@@ -6,6 +6,7 @@ import Link from "next/link";
 import Logo from "@/components/Logo";
 import { useAuth } from "@/lib/auth";
 import { useMachine } from "@/lib/machine";
+import { DESKTOP } from "@/lib/desktop";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: OverviewIcon },
@@ -141,15 +142,17 @@ export default function DashboardLayout({
                 Connect device
               </Link>
             )}
-            <button
-              onClick={() => {
-                signOut();
-                router.push("/");
-              }}
-              className="tlabel hover:text-danger"
-            >
-              Sign out
-            </button>
+            {!DESKTOP && (
+              <button
+                onClick={() => {
+                  signOut();
+                  router.push("/");
+                }}
+                className="tlabel hover:text-danger"
+              >
+                Sign out
+              </button>
+            )}
           </div>
         </header>
 

@@ -1,0 +1,13 @@
+# The desktop app: serverside's runtime deps (no matplotlib — that is only the
+# CLI's preview images — and no pytest), plus the window and the packager.
+fastapi
+uvicorn[standard]
+python-multipart
+pymongo
+pyserial
+numpy
+pillow
+scikit-image
+opencv-python-headless
+pywebview
+pyinstaller

@@ -1,8 +1,12 @@
 // Client for the TraceWorks Python API (FastAPI, default http://localhost:8000).
-// Set NEXT_PUBLIC_API_URL to point elsewhere.
+// Set NEXT_PUBLIC_API_URL to point elsewhere. The desktop build is served by
+// the API itself, so it uses relative URLs on whatever port that picked.
 
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { DESKTOP } from "./desktop";
+
+export const API_URL = DESKTOP
+  ? ""
+  : process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export type User = { name: string; email: string };
 

@@ -13,6 +13,7 @@ pcb_ui/
 ├── userpage/                the frontend — Next.js 15 + React 19 + TypeScript
 ├── machine-control-slice-1/ a separate workbench app (own UI + own server)
 ├── docs/                    design specs and plans
+├── desktop/                 the Windows app: installer, window, SQLite build
 └── RUNNING.md               how to run both halves  ← start here
 ```
 
@@ -37,6 +38,13 @@ cd userpage
 npm install
 npm run dev                                 # http://localhost:3000
 ```
+
+## Windows app
+
+TraceWorks also ships as an installable Windows app — one setup file, its own
+window, no MongoDB or Node needed, no sign-in. Download it from
+[Releases](https://github.com/moi-script/pcb_ui/releases/latest); build and
+release it as described in [desktop/README.md](desktop/README.md).
 
 ## Stack
 

@@ -7,8 +7,10 @@ import { API_URL, type ConsoleLine, type MachineSnapshot } from "@/lib/api";
 const CONSOLE_LIMIT = 300;
 
 function wsUrl(): string {
-  // API_URL is an http(s) origin; the socket lives on the same one.
-  return API_URL.replace(/^http/, "ws") + "/machine/ws";
+  // API_URL is an http(s) origin; the socket lives on the same one. Empty
+  // means this page's own origin (the desktop build).
+  const origin = API_URL || window.location.origin;
+  return origin.replace(/^http/, "ws") + "/machine/ws";
 }
 
 /**

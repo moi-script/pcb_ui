@@ -2,9 +2,12 @@ import Link from "next/link";
 import MarketingNav from "@/components/MarketingNav";
 import Footer from "@/components/Footer";
 import PcbBoard from "@/components/PcbBoard";
+import DesktopHome from "@/components/DesktopHome";
 import { pipeline } from "@/lib/data";
+import { DESKTOP } from "@/lib/desktop";
 
 export default function Landing() {
+  if (DESKTOP) return <DesktopHome />;
   return (
     <div className="substrate min-h-screen">
       <MarketingNav />

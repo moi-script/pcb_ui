@@ -1,0 +1,62 @@
+name: desktop
+
+# Builds the Windows installer (desktop/build.ps1) and, for a version tag,
+# publishes it on a GitHub Release — the page whose link people download from.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# A manual run (Actions tab -> desktop -> Run workflow) builds it as a
+# downloadable workflow artifact without making a release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: build TraceWorks-Setup.exe
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: userpage/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0-dev" }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        shell: pwsh
+        run: ./desktop/build.ps1 -Version ${{ steps.version.outputs.value }}
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: TraceWorks-Setup-${{ steps.version.outputs.value }}
+          path: desktop/dist/TraceWorks-Setup-*.exe
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/dist/TraceWorks-Setup-*.exe
+          generate_release_notes: true

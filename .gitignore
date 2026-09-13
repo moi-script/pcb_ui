@@ -23,3 +23,6 @@ venv/
 
 # git worktrees for isolated feature work
 .worktrees/
+
+# Windows desktop build output (desktop/build.ps1)
+desktop/dist/
