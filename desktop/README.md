@@ -57,4 +57,6 @@ git push origin v0.1.0
 ```
 
 The link to share is then
-`https://github.com/moi-script/pcb_ui/releases/latest`.
+`https://github.com/moi-script/pcb_ui/releases/latest`, or, to start the
+download straight away (the landing page's button uses this),
+`https://github.com/moi-script/pcb_ui/releases/latest/download/TraceWorks-Setup.exe`.

@@ -48,6 +48,12 @@ jobs:
         shell: pwsh
         run: ./desktop/build.ps1 -Version ${{ steps.version.outputs.value }}
 
+      # A fixed-name copy, so releases/latest/download/TraceWorks-Setup.exe
+      # (the landing page's download button) is always the newest installer.
+      - name: Stable filename
+        shell: pwsh
+        run: Copy-Item desktop/dist/TraceWorks-Setup-*.exe desktop/dist/TraceWorks-Setup.exe
+
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
@@ -58,5 +64,7 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: desktop/dist/TraceWorks-Setup-*.exe
+          files: |
+            desktop/dist/TraceWorks-Setup-*.exe
+            desktop/dist/TraceWorks-Setup.exe
           generate_release_notes: true

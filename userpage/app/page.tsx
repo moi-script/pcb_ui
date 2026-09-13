@@ -4,7 +4,7 @@ import Footer from "@/components/Footer";
 import PcbBoard from "@/components/PcbBoard";
 import DesktopHome from "@/components/DesktopHome";
 import { pipeline } from "@/lib/data";
-import { DESKTOP } from "@/lib/desktop";
+import { DESKTOP, WINDOWS_DOWNLOAD_URL } from "@/lib/desktop";
 
 export default function Landing() {
   if (DESKTOP) return <DesktopHome />;
@@ -32,10 +32,17 @@ export default function Landing() {
               <Link href="/signup" className="btn btn-copper">
                 Create an account
               </Link>
+              <a href={WINDOWS_DOWNLOAD_URL} className="btn btn-primary">
+                <DownloadIcon />
+                Download for Windows
+              </a>
               <Link href="/connect" className="btn btn-ghost">
                 Pair a device →
               </Link>
             </div>
+            <p className="mt-3 font-mono text-xs text-faint">
+              Windows 10 / 11 · free · installs like an app, no account needed
+            </p>
             <dl className="mt-12 grid max-w-md grid-cols-3 gap-6 border-t border-line pt-6">
               <Stat value="92%" label="less pen travel" />
               <Stat value="352" label="tracks parsed" />
@@ -275,10 +282,15 @@ export default function Landing() {
               Turn a board into a plot.
             </h2>
             <p className="mt-2 text-ink-soft">
-              Create an account and pair the demo machine in under a minute.
+              Create an account and pair the demo machine in under a minute, or
+              install the Windows app and plot without an account.
             </p>
           </div>
-          <div className="flex flex-none gap-3">
+          <div className="flex flex-none flex-wrap justify-center gap-3">
+            <a href={WINDOWS_DOWNLOAD_URL} className="btn btn-primary">
+              <DownloadIcon />
+              Download for Windows
+            </a>
             <Link href="/signup" className="btn btn-copper">
               Get started
             </Link>
@@ -295,6 +307,14 @@ export default function Landing() {
 }
 
 /* ------------------------------------------------------------------ atoms */
+
+function DownloadIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden fill="none">
+      <path d="M7 1.5v8M3.5 6 7 9.5 10.5 6M2 12.5h10" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
 
 function Stat({ value, label }: { value: string; label: string }) {
   return (

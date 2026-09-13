@@ -4,5 +4,12 @@
 // user instead of accounts.
 export const DESKTOP = process.env.NEXT_PUBLIC_DESKTOP === "1";
 
+/**
+ * The Windows installer, newest release. Every release carries a copy under
+ * this fixed name (.github/workflows/desktop.yml), so the link never changes.
+ */
+export const WINDOWS_DOWNLOAD_URL =
+  "https://github.com/moi-script/pcb_ui/releases/latest/download/TraceWorks-Setup.exe";
+
 /** The single account every desktop install signs in as, silently. */
 export const DESKTOP_USER = { name: "Local", email: "local@traceworks.desktop" };
