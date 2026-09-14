@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 
 import Dro from "@/components/Dro";
 import JogPad from "@/components/JogPad";
+import MachineSetupPanel from "@/components/MachineSetupPanel";
 import MachineConsole from "@/components/MachineConsole";
 import { api } from "@/lib/api";
 import { useMachine } from "@/lib/machine";
@@ -81,8 +82,12 @@ export default function MachinePage() {
             {snap?.conn.firmware}
           </p>
         </div>
+        {/* Disconnecting resets the controller, which ends a plot on the
+            spot — and sits where a stray click lands. Stop the plot first. */}
         <button
           className="btn btn-ghost"
+          disabled={jobRunning}
+          title={jobRunning ? "Stop the plot before disconnecting" : undefined}
           onClick={() =>
             guard(async () => {
               await api.machineDisconnect();
@@ -115,9 +120,9 @@ export default function MachinePage() {
             <span className="tlabel">Work zero</span>
             <p className="mt-2 text-xs text-muted">
               Connecting reset the controller and put work zero where the pen
-              is. A plot starts there, at its top-left corner, and runs down.
-              To start somewhere else, jog there and zero X + Y. Z is the pen
-              servo and is never zeroed.
+              is. A plot starts there, at the start corner chosen in the
+              machine setup. To start somewhere else, jog there and zero X +
+              Y. Z is the pen servo and is never zeroed.
             </p>
             <div className="mt-4 grid grid-cols-3 gap-1.5">
               {["X", "Y", "XY"].map((axes) => (
@@ -139,7 +144,7 @@ export default function MachinePage() {
               <button
                 className="btn btn-ghost flex-1"
                 disabled
-                title="No limit switches on grbl_servo_z: jog to the top-left corner and zero X + Y instead"
+                title="No limit switches on grbl_servo_z: jog to the start corner and zero X + Y instead"
               >
                 Home ($H)
               </button>
@@ -151,9 +156,14 @@ export default function MachinePage() {
               </button>
             </div>
             <p className="mt-2 font-mono text-[0.7rem] text-faint">
-              no homing on this firmware — jog to the top-left corner, then zero X + Y
+              no homing on this firmware — jog to the start corner, then zero X + Y
             </p>
           </div>
+
+          <MachineSetupPanel
+            setup={snap?.conn.setup}
+            disabled={jobRunning}
+          />
 
           {/* Set apart from every other control: an e-stop next to a jog
               button is an e-stop that gets pressed by accident, and a jog

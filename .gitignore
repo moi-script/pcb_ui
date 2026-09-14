@@ -26,3 +26,6 @@ venv/
 
 # Windows desktop build output (desktop/build.ps1)
 desktop/dist/
+
+# Operator machine setup written by the dev server (bed, corner, reversed axes)
+serverside/machine_setup.json

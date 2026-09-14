@@ -7,9 +7,15 @@ wanted, this is the seam to widen — everything downstream takes a Profile.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from grbl.axes import ORIGINS, AxisMap
 
 PEN_MODES = ("z-axis", "servo-pwm")
+
+# The largest bed this plotter has. A smaller one may be configured (a jig,
+# a small sheet), never a larger one: past 100 mm the carriage hits the frame.
+MAX_TRAVEL_XY = 100.0
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,65 @@ class Profile:
     # after a stop uses this, so a faster Z would leave the pen dragging.
     z_feed: float = 200.0
     jog_feed: float = 500.0
+    # Machine setup, the way Universal G-code Sender offers it. `origin` is
+    # the corner of the drawing that sits on work zero (where the pen is
+    # parked); the plot extends from it into the bed. `invert_x`/`invert_y`
+    # reverse an axis whose motor turns the wrong way — see grbl/axes.py
+    # for why that is done here and not with Grbl's `$3`.
+    origin: str = "top-left"
+    invert_x: bool = False
+    invert_y: bool = False
+
+    @property
+    def axis_map(self) -> AxisMap:
+        return AxisMap(self.invert_x, self.invert_y)
+
+    def setup(self) -> dict:
+        """The operator-editable part, as the API reports it."""
+        return {
+            "travelX": self.travel_x,
+            "travelY": self.travel_y,
+            "origin": self.origin,
+            "invertX": self.invert_x,
+            "invertY": self.invert_y,
+            "maxTravel": MAX_TRAVEL_XY,
+        }
+
+
+def with_setup(
+    profile: Profile,
+    travel_x: float | None = None,
+    travel_y: float | None = None,
+    origin: str | None = None,
+    invert_x: bool | None = None,
+    invert_y: bool | None = None,
+) -> Profile:
+    """A copy of `profile` with the machine setup changed, validated.
+
+    Raises ValueError with an operator-readable message on a bad value.
+    """
+    changes: dict = {}
+    for name, value in (("travel_x", travel_x), ("travel_y", travel_y)):
+        if value is None:
+            continue
+        value = float(value)
+        if not 1.0 <= value <= MAX_TRAVEL_XY:
+            raise ValueError(
+                f"The bed must be between 1 and {MAX_TRAVEL_XY:g} mm on each "
+                f"axis; got {value:g} mm."
+            )
+        changes[name] = value
+    if origin is not None:
+        if origin not in ORIGINS:
+            raise ValueError(
+                f"Start corner must be one of {', '.join(ORIGINS)}; got {origin!r}."
+            )
+        changes["origin"] = origin
+    if invert_x is not None:
+        changes["invert_x"] = bool(invert_x)
+    if invert_y is not None:
+        changes["invert_y"] = bool(invert_y)
+    return replace(profile, **changes)
 
 
 DEFAULT_PROFILE = Profile()

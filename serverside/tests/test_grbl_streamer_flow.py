@@ -83,6 +83,7 @@ def test_unanswered_polls_raise_a_disconnect():
     sim.stop_answering_status = True
     events: list = []
     s = Streamer(sim, on_event=events.append)
+    s.max_missed_polls = 3  # the default waits five seconds; the rule is the same
     s.start(poll_hz=20.0)
     try:
         deadline = time.time() + 3.0
@@ -93,6 +94,14 @@ def test_unanswered_polls_raise_a_disconnect():
     finally:
         s.stop()
     assert any(isinstance(e, DisconnectedEvent) for e in events)
+    # A controller that stopped answering may still be moving: it is reset,
+    # and the port is released so the next Connect can open it.
+    assert sim._closed
+
+
+def test_the_watchdog_tolerates_a_few_seconds_of_silence():
+    s = Streamer(GrblSim())
+    assert s.max_missed_polls * s.poll_timeout >= 5.0
 
 
 def test_send_line_is_safe_while_the_poll_loop_runs():

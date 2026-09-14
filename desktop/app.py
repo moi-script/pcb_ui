@@ -128,9 +128,43 @@ def _wait_until_up(port: int, timeout: float = 30.0) -> bool:
     return False
 
 
+def _already_running() -> bool:
+    """True if another TraceWorks window is open on this PC.
+
+    Two copies means two servers, and only one of them can hold the
+    plotter's COM port: the other is told "Access is denied" on Connect, or
+    worse, one is plotting while the operator presses buttons in the other.
+    A named mutex lives exactly as long as the process that created it.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    global _instance_mutex  # held for the life of the process
+    _instance_mutex = kernel32.CreateMutexW(None, False, "Local\\TraceWorksDesktop")
+    ERROR_ALREADY_EXISTS = 183
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "TraceWorks is already open. Only one window can control the "
+            "plotter at a time.",
+            APP_NAME,
+            0x40,  # MB_ICONINFORMATION
+        )
+        return True
+    return False
+
+
+_instance_mutex = None
+
+
 def main() -> None:
     import uvicorn
     import webview
+
+    if _already_running():
+        sys.exit(0)
 
     if not (UI_DIR / "index.html").is_file():
         sys.exit(f"UI not built: {UI_DIR} is missing. See desktop/README.md.")

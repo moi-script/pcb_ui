@@ -167,11 +167,22 @@ class GrblSim:
                 self._reset_acks()
                 self.state = "Idle"
         elif ch == b"\x18":
+            held = self.state == "Hold"
             self._queue.clear()
             self._reset_acks()
-            self.state = "Alarm"
+            self._partial = ""
             self._emit("")
             self._emit(BANNER)
+            if held:
+                # Real Grbl's mc_reset() only raises ALARM:3 when steppers are
+                # moving or still decelerating into a hold. Once a feed hold
+                # has completed (`Hold:0`) the motors are at rest, so a reset
+                # keeps the position and comes back Idle. This model's hold is
+                # instantaneous, so Hold here is always a completed one.
+                self.state = "Idle"
+                self.feed = 0.0
+                return
+            self.state = "Alarm"
             # Real GRBL 1.1 reports ALARM:3, "Reset while in motion", after
             # the restart banner: the soft reset aborted motion, so the
             # position is no longer trusted. Modelling it matters beyond
@@ -185,8 +196,11 @@ class GrblSim:
 
     def _status_report(self) -> str:
         mpos = ",".join(f"{v:.3f}" for v in self.pos)
+        # A hold here is always complete (see the soft reset above), which
+        # real Grbl reports as substate 0.
+        state = "Hold:0" if self.state == "Hold" else self.state
         return (
-            f"<{self.state}|MPos:{mpos}|FS:{self.feed:.0f},0"
+            f"<{state}|MPos:{mpos}|FS:{self.feed:.0f},0"
             f"|WCO:{self.wco[0]:.3f},{self.wco[1]:.3f},{self.wco[2]:.3f}>"
         )
 

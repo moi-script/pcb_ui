@@ -57,6 +57,7 @@ from pymongo import ReturnDocument
 
 import db
 from grbl import ports as grbl_ports
+from grbl.axes import origin_offset, place_program
 from grbl.limits import AXIS_INDEX, EPS, LimitError, check_program, program_extents
 from grbl.profile import DEFAULT_PROFILE
 from grbl.protocol import Realtime, encode_jog, encode_zero
@@ -84,6 +85,21 @@ if not _narration.handlers:
 
 
 app = FastAPI(title="TraceWorks API", version="0.1.0")
+
+
+@app.on_event("shutdown")
+def release_the_machine() -> None:
+    """Halt the plotter and close its port when the server goes away.
+
+    Without this a server restart (`--reload` saving a .py file, Ctrl+C, the
+    app closing) left Grbl drawing out its buffer for seconds with nobody
+    streaming, and the port could stay held long enough for the next Connect
+    to be told "Access is denied".
+    """
+    try:
+        session.disconnect()
+    except Exception:  # noqa: BLE001 - shutting down regardless
+        pass
 
 # The browser (Next.js dev server) runs on some localhost port; allow any.
 app.add_middleware(
@@ -430,6 +446,14 @@ class CommandRequest(BaseModel):
     line: str
 
 
+class SetupRequest(BaseModel):
+    travel_x: float | None = None
+    travel_y: float | None = None
+    origin: str | None = None
+    invert_x: bool | None = None
+    invert_y: bool | None = None
+
+
 class RunRequest(BaseModel):
     board_id: str
     check: bool = False
@@ -511,7 +535,8 @@ async def trace(file: UploadFile = File(...), email: str = Form(...),
     params = TraceParams(size_mm=size_mm, mode=mode, preset=preset,
                          threshold=threshold, invert=invert,
                          hatch_spacing_mm=hatch_spacing_mm,
-                         hatch_angle=hatch_angle, hatch_cross=hatch_cross)
+                         hatch_angle=hatch_angle, hatch_cross=hatch_cross,
+                         bed=(session.profile.travel_x, session.profile.travel_y))
     try:
         strokes, info = trace_image(raw, params)
     except TraceError as e:
@@ -708,6 +733,10 @@ def machine_connect(body: ConnectRequest):
         raise HTTPException(
             409, f"A plot is running on {session.state.port} ('{job.name}'). "
                  "Stop it before connecting again.")
+    # Let go of the port this process already holds BEFORE opening one.
+    # Opening first meant a link that had dropped on its own — still holding
+    # COM4 — refused its own reconnect with "Access is denied".
+    session.disconnect()
     try:
         transport = make_transport(body.port, body.baud)
     except Exception as exc:  # noqa: BLE001 - pyserial raises many shapes
@@ -736,9 +765,29 @@ def machine_last(email: str):
 
 
 @app.post("/machine/disconnect")
-def machine_disconnect():
+def machine_disconnect(force: bool = False):
+    job = session.job
+    if not force and job is not None and job.state in ("running", "paused"):
+        # Disconnecting resets the controller: it ends the plot on the spot.
+        raise HTTPException(
+            409, f"'{job.name}' is plotting. Stop it before disconnecting.")
     session.disconnect()
     return {"ok": True}
+
+
+@app.get("/machine/setup")
+def machine_setup_get():
+    return session.profile.setup()
+
+
+@app.put("/machine/setup")
+def machine_setup_put(body: SetupRequest):
+    """Bed size, start corner and reversed axes — UGS's machine setup."""
+    try:
+        profile = session.update_setup(**body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return profile.setup()
 
 
 @app.get("/machine/state")
@@ -1000,6 +1049,13 @@ def machine_run(body: RunRequest):
     # sheet coordinates — a hundred millimetres off the bed — and streaming
     # one alarms the machine mid-plot, which costs the operator the work
     # zero they set by hand. Refusing here costs a sentence.
+    # Stored G-code hangs down-and-right from its top-left corner. Move it so
+    # the corner the operator chose sits on work zero, where the pen is.
+    profile = session.profile
+    extents = program_extents(lines)
+    if extents is not None and profile.origin != "top-left":
+        lines = place_program(lines, *origin_offset(profile.origin, extents))
+
     try:
         check_program(session.profile, lines)
     except LimitError as exc:

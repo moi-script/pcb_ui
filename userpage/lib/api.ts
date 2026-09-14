@@ -113,6 +113,21 @@ export type JobSnapshot = {
   line: string;
 };
 
+export type Origin = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+
+/** The operator-editable machine setup, like Universal G-code Sender's. */
+export type MachineSetup = {
+  travelX: number;
+  travelY: number;
+  /** The corner of the drawing that sits on work zero, where the pen is parked. */
+  origin: Origin;
+  /** Reverse an axis whose motor turns the wrong way (done in software). */
+  invertX: boolean;
+  invertY: boolean;
+  /** The largest bed this plotter has, in mm. */
+  maxTravel: number;
+};
+
 export type MachineSnapshot = {
   conn: {
     connected: boolean;
@@ -122,6 +137,7 @@ export type MachineSnapshot = {
     profile: string;
     penMode: string;
     travel: [number, number, number];
+    setup: MachineSetup;
   };
   state: string;
   mpos: [number, number, number];
@@ -202,6 +218,20 @@ export const api = {
   machineDisconnect: () =>
     req<{ ok: boolean }>("/machine/disconnect", { method: "POST" }),
 
+  machineSetup: () => req<MachineSetup>("/machine/setup"),
+
+  saveMachineSetup: (setup: {
+    travel_x?: number;
+    travel_y?: number;
+    origin?: Origin;
+    invert_x?: boolean;
+    invert_y?: boolean;
+  }) =>
+    req<MachineSetup>("/machine/setup", {
+      method: "PUT",
+      body: JSON.stringify(setup),
+    }),
+
   machineState: () => req<MachineSnapshot>("/machine/state"),
 
   machineLast: (email: string) =>
@@ -247,9 +277,9 @@ export const api = {
   resumeJob: () => req<{ ok: boolean }>("/machine/resume", { method: "POST" }),
   stopJob: () => req<{ ok: boolean }>("/machine/stop", { method: "POST" }),
   /**
-   * Stop and run the same file again from line 1. Takes a moment: the
-   * server waits for the machine to come to rest and lifts the pen before
-   * it starts over. Work zero is kept.
+   * Stop and run the same file again from line 1. The server feed-holds,
+   * resets the controller from rest (no queue to drain), lifts the pen and
+   * starts over — about a second. Work zero is kept.
    */
   restartJob: () =>
     req<{ ok: boolean; total: number; check: boolean }>("/machine/restart", {

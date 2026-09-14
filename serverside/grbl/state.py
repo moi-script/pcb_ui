@@ -133,6 +133,13 @@ class MachineState:
                 self._log("sys", "disconnected", "message")
             self._touch()
 
+    def set_profile(self, profile: Profile) -> None:
+        """Swap in a changed machine setup (bed, corner, axis directions)."""
+        with self._lock:
+            self.profile = profile
+            self._log("sys", "machine setup changed", "message")
+            self._touch()
+
     def apply(self, event: object) -> None:
         with self._lock:
             if isinstance(event, StatusEvent):
@@ -234,6 +241,7 @@ class MachineState:
                         self.profile.travel_y,
                         self.profile.travel_z,
                     ],
+                    "setup": self.profile.setup(),
                 },
                 "state": self.state,
                 "mpos": list(self.mpos),

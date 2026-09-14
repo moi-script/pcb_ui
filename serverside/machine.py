@@ -7,19 +7,34 @@ believe they own the port.
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 import threading
 import time
+from pathlib import Path
 
 from fastapi import HTTPException
 
 from grbl.limits import AXIS_INDEX, LimitError, check_jog
-from grbl.profile import DEFAULT_PROFILE, Profile
+from grbl.profile import DEFAULT_PROFILE, Profile, with_setup
 from grbl.protocol import Realtime
 from grbl.state import MachineState
 from grbl.streamer import ReplyEvent, Streamer, Transport
 from job import Job
 
 BANNER_TIMEOUT = 3.0
+
+log = logging.getLogger("traceworks.machine")
+
+
+def default_setup_path() -> Path:
+    """Where the operator's machine setup (bed, corner, reversed axes) lives."""
+    base = os.environ.get("TRACEWORKS_DATA_DIR")
+    return Path(base) / "machine_setup.json" if base else (
+        Path(__file__).resolve().parent / "machine_setup.json"
+    )
+
 
 SIM_PORT = "SIM"
 
@@ -181,17 +196,23 @@ class SerialTransport:
 class Session:
     """Holds the one connection and the one machine state.
 
-    There is no profile store behind this: `grbl.profile.DEFAULT_PROFILE` is
-    a frozen dataclass, so the envelope and feeds are the same object for the
-    life of the process. Slice-1 re-read its profile out of sqlite on every
-    connect; there is nothing here that could have changed in between.
+    The profile is `grbl.profile.DEFAULT_PROFILE` with the operator's machine
+    setup laid over it — bed size, start corner, reversed axes — kept in a
+    small JSON file (see update_setup). Everything else about the machine is
+    fixed by its firmware and does not change between requests.
     """
 
     profile: Profile
 
-    def __init__(self) -> None:
-        self.profile = DEFAULT_PROFILE
+    def __init__(self, setup_path: Path | None = None) -> None:
+        # `setup_path` None keeps the setup in memory only (tests); the
+        # module-level session persists it, so a reversed axis stays
+        # reversed across restarts of the app.
+        self._setup_path = setup_path
+        self.profile = self._load_setup(DEFAULT_PROFILE)
         self.state = MachineState(self.profile)
+        # Set by every restart banner the controller sends; see halt().
+        self._banner = threading.Event()
         self.streamer: Streamer | None = None
         self.job: Job | None = None
 
@@ -229,6 +250,59 @@ class Session:
         # `state == "Idle"` read is not enough on its own (N1).
         self._planned_taint_seq: int | None = None
 
+    # --- machine setup -----------------------------------------------------
+
+    def _load_setup(self, base: Profile) -> Profile:
+        if self._setup_path is None or not self._setup_path.is_file():
+            return base
+        try:
+            data = json.loads(self._setup_path.read_text(encoding="utf-8"))
+            return with_setup(
+                base,
+                travel_x=data.get("travel_x"),
+                travel_y=data.get("travel_y"),
+                origin=data.get("origin"),
+                invert_x=data.get("invert_x"),
+                invert_y=data.get("invert_y"),
+            )
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            log.warning("ignoring unreadable machine setup %s: %s",
+                        self._setup_path, exc)
+            return base
+
+    def update_setup(self, **changes) -> Profile:
+        """Change the bed size, start corner or axis directions.
+
+        Refused mid-plot: a file already streaming was measured and placed
+        against the old setup, and flipping an axis under it would send the
+        rest of the board the other way. Raises ValueError on a bad value.
+        """
+        if self.job is not None and self.job.state in ("running", "paused"):
+            raise HTTPException(
+                409, "A plot is running. Stop it before changing the machine setup."
+            )
+        profile = with_setup(self.profile, **changes)
+        if self._setup_path is not None:
+            self._setup_path.parent.mkdir(parents=True, exist_ok=True)
+            self._setup_path.write_text(json.dumps({
+                "travel_x": profile.travel_x,
+                "travel_y": profile.travel_y,
+                "origin": profile.origin,
+                "invert_x": profile.invert_x,
+                "invert_y": profile.invert_y,
+            }, indent=2), encoding="utf-8")
+
+        self.profile = profile
+        self.state.set_profile(profile)
+        streamer = self.streamer
+        if streamer is not None:
+            with streamer._lock:
+                streamer.axis_map = profile.axis_map
+            # Positions already on the books are in the old frame; nothing
+            # may be jogged against them until a fresh report arrives.
+            self.taint_planned()
+        return profile
+
     def require(self) -> Streamer:
         if self.streamer is None or not self.streamer.connected:
             raise HTTPException(409, "Machine is not connected.")
@@ -249,79 +323,120 @@ class Session:
         job.start()
         return job
 
-    # How long to wait for the controller to come to rest after a stop
-    # before refusing to restart. What has to drain is GRBL's planner —
-    # sixteen blocks — and how long that takes is a property of the file,
-    # not of the machine: sixteen 1 mm moves at the draw feed is about a
-    # second, but sixteen long traverses at a slow feed is most of a
-    # minute. Generous enough not to refuse an honest slow board, bounded
-    # so a wedged controller answers instead of hanging the request.
-    RESTART_DRAIN_TIMEOUT = 45.0
+    # How long a restart waits for each step of halting the controller: the
+    # feed hold to finish decelerating (a fraction of a second at this
+    # machine's 500 mm/min), then the reset banner. Bounded so a wedged
+    # controller answers instead of hanging the request.
+    HOLD_TIMEOUT = 5.0
+    RESET_TIMEOUT = 3.0
 
     def restart_job(self) -> Job:
         """Stop what is plotting and run the same file again from line 1.
 
-        Stop on its own does not leave a machine you can simply re-run:
-        the controller still holds a planner's worth of moves when the
-        button is pressed, and the pen is wherever the file left it —
-        usually down, in the middle of a trace. Starting the file again on
-        top of that drags ink across the board on the way to the first
-        point, which is why doing this by hand meant an e-stop and setting
-        work zero over again.
+        This used to stop the job and then wait for the controller to draw
+        out every move already queued in it -- sixteen planner blocks plus a
+        full RX buffer, which on long traverses is most of a minute -- before
+        answering. The button looked frozen the whole time.
 
-        So: stop, wait for the machine to actually come to rest, lift the
-        pen, then stream from the top. Work zero is never touched. That is
-        the whole point — a botched plot should not cost the corner that
-        was set by hand.
+        Now it halts the controller instead of waiting on it (see halt()),
+        lifts the pen, and streams the file from the top. Work zero is never
+        touched: a botched plot should not cost the corner set by hand.
         """
         streamer = self.require()
         job = self.require_job()
         lines, check, name = list(job.lines), job.check, job.name
 
-        if job.state in ("running", "paused"):
+        if check:
+            # Check mode moves nothing, and a reset would swallow the `$C`
+            # that turns it back off. The ordinary stop is already instant.
             job.stop()
+            return self.start_job(lines, check, name)
 
-        if not self._wait_until_rested(streamer, self.RESTART_DRAIN_TIMEOUT):
-            raise HTTPException(
-                409,
-                "The machine has not come to rest since the job stopped, so "
-                "starting over would stream into a moving head. Wait for it "
-                "to finish the queued moves, or use the e-stop.",
-            )
+        self.halt(streamer, job)
 
-        # A stop lands the head somewhere nobody planned; nothing may be
+        # A halt lands the head somewhere nobody planned; nothing may be
         # jogged against that base until a report proves where it is.
         self.taint_planned()
 
-        # Pen up before the file's own first rapid, whatever the file left
-        # behind. Z >= 0 is the servo's "up" (see Profile).
+        # Pen up before the file's own first move. Z >= 0 is the servo's
+        # "up" (see Profile); the reset already raised the servo, but machine
+        # Z still reads down until a move says otherwise.
         streamer.send_line(
             f"G1 Z{self.profile.pen_up_z:g} F{self.profile.z_feed:g}"
         )
+        # Let its `ok` (and the unlock's, if there was one) come back first:
+        # the job counts acknowledgements, and one it did not send would
+        # declare the file finished a line early.
+        deadline = time.monotonic() + 2.0
+        while not streamer.quiet and time.monotonic() < deadline:
+            time.sleep(0.02)
 
         return self.start_job(lines, check, name)
 
-    def _wait_until_rested(self, streamer: Streamer, timeout: float) -> bool:
-        """Block until the controller reports Idle with nothing of ours out.
+    def halt(self, streamer: Streamer, job: Job | None = None) -> None:
+        """Bring the controller to rest with an empty queue, in about a second.
 
-        Two conditions, and both are needed. `Idle` alone can be a report
-        GENERATED before the stop and only dispatched after it — the same
-        staleness `settle()` exists to defend against — so the report must
-        be newer than the one on the books when this started. And an Idle
-        machine with lines still in our outbox is not at rest either; it is
-        about to move again.
+        1. stop feeding the file;
+        2. feed-hold, and wait for the hold to COMPLETE (`Hold:0`): the
+           motors decelerate to rest under control, so no step is lost;
+        3. soft-reset. From a completed hold Grbl discards its whole queue
+           and comes back Idle without ALARM:3 -- machine position is kept,
+           the G54 work zero lives in EEPROM, and grbl_servo_z's mc_reset()
+           lifts the pen.
+
+        Raises 409 if the controller never comes to rest or never answers.
         """
+        if job is not None:
+            job.abort()
+
+        snap = self.state.snapshot()
+        # Held whenever it could be moving. A cached `Idle` is not evidence
+        # otherwise: it can be a report from between two blocks, a fifth of
+        # a second old, with the next move already parsed. A hold on a truly
+        # idle Grbl does nothing.
+        if not snap["state"].startswith(("Alarm", "Disconnected")):
+            baseline = snap["statusSeq"]
+            streamer.send_realtime(Realtime.FEED_HOLD)
+            if not self._wait_for_state(("Hold:0", "Idle"), baseline,
+                                        self.HOLD_TIMEOUT):
+                raise HTTPException(
+                    409,
+                    "The machine did not come to a stop after a feed hold. "
+                    "Use the e-stop.",
+                )
+
+        self._banner.clear()
         baseline = self.state.snapshot()["statusSeq"]
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        streamer.send_realtime(Realtime.SOFT_RESET)
+        deadline = time.monotonic() + self.RESET_TIMEOUT
+        while not self._banner.is_set():
+            if time.monotonic() >= deadline or not streamer.connected:
+                raise HTTPException(
+                    409, "The controller did not answer the reset. Reconnect it."
+                )
+            time.sleep(0.02)
+
+        # A reset that caught the motors moving anyway (a hold that had not
+        # really finished) comes back in ALARM:3 and refuses every line.
+        # Steps may have been lost then, but the operator asked to start
+        # again, and at this machine's feeds the loss is a fraction of a
+        # millimetre: unlock rather than leave the restart dead.
+        if self._wait_for_state(("Idle", "Alarm"), baseline, 1.0) and \
+                self.state.snapshot()["state"].startswith("Alarm"):
+            log.warning("restart: the reset left the controller in alarm; unlocking")
+            streamer.send_line("$X")
+
+    def _wait_for_state(self, states: tuple[str, ...], baseline: int,
+                        timeout: float) -> bool:
+        """Wait for a status report newer than `baseline` in one of `states`."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             snap = self.state.snapshot()
-            if (
-                snap["statusSeq"] > baseline
-                and snap["state"] == "Idle"
-                and streamer.quiet
+            if snap["statusSeq"] > baseline and any(
+                snap["state"].startswith(st) for st in states
             ):
                 return True
-            time.sleep(0.05)
+            time.sleep(0.02)
         return False
 
     def require_job(self) -> Job:
@@ -370,6 +485,8 @@ class Session:
         if job is not None:
             job.on_streamer_event(event)
         self.state.apply(event)
+        if isinstance(event, ReplyEvent) and event.reply.kind == "banner":
+            self._banner.set()
         if isinstance(event, ReplyEvent) and event.reply.kind in ("alarm", "error"):
             self.taint_planned()
 
@@ -393,6 +510,7 @@ class Session:
             rx_buffer=self.profile.rx_buffer,
             on_event=self._on_streamer_event,
             lock=link_lock,
+            axis_map=self.profile.axis_map,
         )
         self.streamer = streamer
 
@@ -729,4 +847,4 @@ class Session:
             return target
 
 
-session = Session()
+session = Session(default_setup_path())

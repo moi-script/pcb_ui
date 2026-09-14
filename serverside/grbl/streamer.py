@@ -12,6 +12,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+from grbl.axes import AxisMap
 from grbl.protocol import Realtime, Reply, Status, parse_reply, parse_status
 
 
@@ -66,6 +67,7 @@ class Streamer:
         rx_buffer: int = 128,
         on_event: Callable[[object], None] | None = None,
         lock: "threading.RLock | None" = None,
+        axis_map: AxisMap | None = None,
     ) -> None:
         # `lock` is the shared link lock (see machine.Session.connect). The
         # streamer, the job and the machine state all guard themselves with
@@ -80,6 +82,9 @@ class Streamer:
         # its own (tests, the CLI) still guards itself.
         self.transport = transport
         self.rx_buffer = rx_buffer
+        # Reversed axes are rewritten here, at the wire, so nothing above
+        # the streamer ever sees the controller's frame. See grbl/axes.py.
+        self.axis_map = axis_map or AxisMap()
         self._on_event = on_event or (lambda _e: None)
 
         self._partial = ""
@@ -94,7 +99,14 @@ class Streamer:
         self._awaiting_status_since: float | None = None
         self.missed_polls = 0
         self.poll_timeout = 0.5
-        self.max_missed_polls = 3
+        # Ten unanswered polls, five seconds of silence, before the link is
+        # declared dead. A real unplug does not need this at all — the OS
+        # fails the next read at once — so the watchdog only ever judges a
+        # controller that is still attached. Calling one of those dead after
+        # a second and a half ended plots mid-board while the Arduino went
+        # on drawing out its buffer: a false alarm costs far more than a
+        # slow true one.
+        self.max_missed_polls = 10
 
     # --- outbound ----------------------------------------------------------
 
@@ -153,7 +165,7 @@ class Streamer:
     def send_line(self, line: str) -> None:
         """Queue a line for transmission under flow control."""
         with self._lock:
-            self._outbox.append(line.strip())
+            self._outbox.append(self.axis_map.outbound(line.strip()))
             self._flush_outbox()
 
     def _flush_outbox(self) -> None:
@@ -195,6 +207,7 @@ class Streamer:
     def _dispatch(self, line: str) -> None:
         if not line:
             return
+        line = self.axis_map.inbound(line)
 
         status = parse_status(line)
         if status is not None:
@@ -300,10 +313,27 @@ class Streamer:
             )
 
     def _drop(self, reason: str) -> None:
+        """Declare the link dead: halt the controller and let go of the port.
+
+        Both halves matter. A controller that merely stopped answering may
+        still be running, and without a reset it draws out everything in its
+        planner and RX buffer — seconds of plotting nobody is watching. And
+        a port left open is still held by this process, so the operator's
+        next Connect is refused by Windows with "Access is denied".
+        """
         with self._lock:
             if not self.connected:
                 return
             self.connected = False
             self._pending.clear()
             self._outbox.clear()
+            self._running = False
+            try:
+                self.transport.write(Realtime.SOFT_RESET)
+            except Exception:  # noqa: BLE001 - the link is already gone
+                pass
+            try:
+                self.transport.close()
+            except Exception:  # noqa: BLE001
+                pass
             self._on_event(DisconnectedEvent(reason))

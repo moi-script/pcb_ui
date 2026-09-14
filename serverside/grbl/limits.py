@@ -30,12 +30,20 @@ def _travel(profile: Profile, axis: str) -> float:
 def envelope(profile: Profile, axis: str) -> tuple[float, float]:
     """(low, high) work coordinates an axis may reach.
 
-    Work zero is the TOP-left of the bed, where the pen is parked: X runs
-    right to +travel_x, Y runs down to -travel_y. Z is the pen servo, which
-    grbl_servo_z drops only below machine Z0, so it spans both sides of 0.
+    Work zero is the corner named by `profile.origin`, where the pen is
+    parked, and the bed extends away from it: from the top-left, X runs
+    right to +travel_x and Y runs down to -travel_y; from the bottom-right,
+    X runs left to -travel_x and Y runs up to +travel_y. Z is the pen servo,
+    which grbl_servo_z drops only below machine Z0, so it spans both sides
+    of 0.
     """
     limit = _travel(profile, axis)
-    return {"X": (0.0, limit), "Y": (-limit, 0.0), "Z": (-limit, limit)}[axis]
+    if axis == "Z":
+        return (-limit, limit)
+    origin = getattr(profile, "origin", "top-left")
+    if axis == "X":
+        return (0.0, limit) if origin.endswith("left") else (-limit, 0.0)
+    return (-limit, 0.0) if origin.startswith("top") else (0.0, limit)
 
 
 def check_jog(

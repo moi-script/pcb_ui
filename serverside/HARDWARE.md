@@ -83,9 +83,18 @@ moment the board announces itself. Work zero is therefore **where the pen
 sits when you connect** — put it over the board's top-left corner first, or jog there
 and zero X + Y on `/dashboard/device`.
 
-**The plot starts at the top-left and runs down.** Work zero is the drawing's
-top-left corner: X runs right from it and Y runs *negative*, down the bed.
-Jogging Y above the zero, or a file that reaches above it, is refused.
+**The plot starts at the start corner.** By default work zero is the
+drawing's top-left corner: X runs right from it and Y runs *negative*, down
+the bed. Jogging past the bed from the zero, or a file that would, is refused.
+
+**Machine setup** (`/dashboard/device`, like Universal G-code Sender's): the bed
+size (at most 100 x 100 mm), the start corner (top-left, top-right,
+bottom-left, bottom-right) and *reverse X* / *reverse Y*. If a jog moves the pen
+the wrong way, tick reverse for that axis. grbl_servo_z ignores Grbl's `$3`
+direction mask (its stepper ISR drives the coils from the raw direction bits),
+so the reversal is done by the server on every line it sends and every
+position it reads back. The setup is saved to `machine_setup.json` in the app's
+data folder and can't be changed mid-plot.
 
 **Never zero Z.** The servo switches on *machine* Z (below 0 is down), and a
 Z work offset shifts every G-code Z without moving that switch, so the pen

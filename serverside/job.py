@@ -176,6 +176,23 @@ class Job:
         with self._lock:
             self._end_check_mode()
 
+    def abort(self) -> None:
+        """Stop feeding and forget the rest of the file, and nothing else.
+
+        For a caller that is about to halt the controller itself (feed hold
+        and soft reset, see machine.Session.halt): no hold/resume here, which
+        would only set the queued moves running again.
+        """
+        with self._lock:
+            if self.state in ("done", "error", "stopped"):
+                return
+            self.state = "stopped"
+            self._finished = time.time()
+            self._check_on = False
+            log.warning("stopped %r at line %d of %d - halting the controller",
+                        self.name, self.acked, len(self.lines))
+        self.streamer.clear_outbox()
+
     # --- feeding -----------------------------------------------------------
 
     # How many lines may be outstanding — handed to the streamer but not yet

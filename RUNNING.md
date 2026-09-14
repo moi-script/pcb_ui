@@ -76,7 +76,8 @@ You should see `Uvicorn running on http://127.0.0.1:8000`. Confirm it:
 - http://localhost:8000/docs — interactive API docs (every endpoint, try them live)
 
 `--reload` restarts the server whenever you save a `.py` file. Drop it in
-production.
+production — and don't save a `.py` file mid-plot: the restart drops the
+serial link, which resets the controller and ends the plot.
 
 If you made a venv, activate it in this terminal first.
 
