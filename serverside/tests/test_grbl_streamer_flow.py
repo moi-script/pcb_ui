@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import time
 
-from grbl.streamer import DisconnectedEvent, Streamer
+from grbl.streamer import DisconnectedEvent, StatusEvent, Streamer
 from grbl.sim import GrblSim
 
 
@@ -78,30 +78,30 @@ def test_polling_thread_produces_status_events():
     assert len([e for e in events if isinstance(e, StatusEvent)]) >= 5
 
 
-def test_unanswered_polls_raise_a_disconnect():
+def test_a_silent_controller_is_not_disconnected():
+    """UGS never hangs up on a controller for missing status reports, and
+    the same Arduino plots through UGS. We used to give up after five
+    seconds of silence and end the plot; now silence only waits."""
     sim = GrblSim()
     sim.stop_answering_status = True
     events: list = []
     s = Streamer(sim, on_event=events.append)
-    s.max_missed_polls = 3  # the default waits five seconds; the rule is the same
     s.start(poll_hz=20.0)
     try:
-        deadline = time.time() + 3.0
+        time.sleep(6.0)
+        assert s.connected
+        assert not any(isinstance(e, DisconnectedEvent) for e in events)
+        sim.stop_answering_status = False
+        deadline = time.time() + 2.0
         while time.time() < deadline:
-            if any(isinstance(e, DisconnectedEvent) for e in events):
+            if any(isinstance(e, StatusEvent) for e in events):
                 break
-            time.sleep(0.02)
+            sim.tick(0.01)
+            time.sleep(0.01)
     finally:
         s.stop()
-    assert any(isinstance(e, DisconnectedEvent) for e in events)
-    # A controller that stopped answering may still be moving: it is reset,
-    # and the port is released so the next Connect can open it.
-    assert sim._closed
-
-
-def test_the_watchdog_tolerates_a_few_seconds_of_silence():
-    s = Streamer(GrblSim())
-    assert s.max_missed_polls * s.poll_timeout >= 5.0
+    assert any(isinstance(e, StatusEvent) for e in events)
+    assert not sim._closed
 
 
 def test_send_line_is_safe_while_the_poll_loop_runs():

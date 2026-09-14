@@ -198,6 +198,24 @@ def test_a_disconnect_mid_job_fails_the_job_visibly(rig):
     assert "cable pulled" in snap["error"]
 
 
+def test_a_controller_that_reboots_mid_job_fails_the_job_visibly(rig):
+    """A power dip resets the Arduino without closing the port. Everything
+    it had queued is gone, so no `ok` will ever come: the job must say so
+    rather than sit at "running" forever."""
+    sim, streamer = rig
+    lines = [f"G1 X{i % 50} F1200" for i in range(200)]
+    job = Job(lines, streamer)
+    streamer.on_event = job.on_streamer_event
+    job.start()
+
+    step(sim, streamer, 10)
+    with streamer._lock:
+        streamer._dispatch("Grbl 1.1f ['$' for help]")
+
+    assert job.state == "error"
+    assert "restarted" in job.error
+
+
 def test_a_stopped_job_leaves_the_machine_able_to_run_the_next_one(rig):
     """Stop feed-holds to halt promptly, then releases.
 

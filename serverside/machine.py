@@ -170,8 +170,9 @@ class SerialTransport:
         # write_timeout keeps write() from blocking forever if the OS TX
         # buffer fills or the USB adapter is yanked mid-write. Without it, a
         # stuck write() would hold the streamer's lock indefinitely, and the
-        # watchdog thread — which relies on that same lock to notice the
-        # link is dead — would never get to run.
+        # streamer thread — which needs that same lock to notice the link is
+        # dead — would never get to run. A timed-out write is retried; only
+        # one that keeps failing ends the connection (Streamer.error_grace).
         self._ser = serial.Serial(port, baud, timeout=0, write_timeout=1.0)
         # Toggling DTR resets an Arduino, which is how we provoke the banner.
         self._ser.dtr = False

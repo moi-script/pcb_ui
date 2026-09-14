@@ -252,6 +252,20 @@ class Job:
         with self._lock:
             if self.state not in ("running", "paused"):
                 return
+            if reply.kind == "banner":
+                # The controller rebooted under a running plot: everything it
+                # had queued is gone and no `ok` for it will ever come. On
+                # these boards that is nearly always a power dip as the servo
+                # or motors draw current. Halt and restart abort the job
+                # before their own reset, so they never reach this.
+                self.state = "error"
+                self.error = (
+                    f"the controller restarted at line {self.acked + 1} - "
+                    "check the servo and motor power supply"
+                )
+                self._finished = time.time()
+                log.error("%r: %s", self.name, self.error)
+                return
             if reply.kind == "ok":
                 if self._bookkeeping_acks:
                     self._bookkeeping_acks -= 1

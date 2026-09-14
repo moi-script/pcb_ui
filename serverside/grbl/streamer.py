@@ -96,17 +96,17 @@ class Streamer:
         self._running = False
         self._lock = lock if lock is not None else threading.RLock()
         self._last_poll = 0.0
-        self._awaiting_status_since: float | None = None
-        self.missed_polls = 0
-        self.poll_timeout = 0.5
-        # Ten unanswered polls, five seconds of silence, before the link is
-        # declared dead. A real unplug does not need this at all — the OS
-        # fails the next read at once — so the watchdog only ever judges a
-        # controller that is still attached. Calling one of those dead after
-        # a second and a half ended plots mid-board while the Arduino went
-        # on drawing out its buffer: a false alarm costs far more than a
-        # slow true one.
-        self.max_missed_polls = 10
+        # How long the port may keep failing, with not one read or write
+        # getting through, before the link is declared dead. Modelled on
+        # Universal G-code Sender, which plots on the same Arduino without
+        # trouble: it ignores a failed read or write outright, and never
+        # hangs up on a controller for going quiet. A CH340 next to a servo
+        # and two steppers fails the odd Windows call and works on the next
+        # one; ending the plot over that is what made these boards
+        # "disconnect on their own". A cable really pulled keeps failing,
+        # and is still let go of a moment later.
+        self.error_grace = 3.0
+        self._failing_since: float | None = None
 
     # --- outbound ----------------------------------------------------------
 
@@ -157,10 +157,22 @@ class Streamer:
         with self._lock:
             if not self.connected:
                 return
-            try:
-                self.transport.write(byte)
-            except OSError as exc:
-                self._drop(str(exc))
+            # A lost `?` is simply asked again next poll. A hold, resume or
+            # reset is the operator stopping the machine, and is tried again
+            # at once rather than left to a hiccup.
+            attempts = 1 if byte == Realtime.STATUS else 5
+            for attempt in range(attempts):
+                if not self.connected:
+                    return
+                try:
+                    self.transport.write(byte)
+                except OSError as exc:
+                    self._io_failed(exc)
+                    if attempt + 1 < attempts:
+                        time.sleep(0.02)
+                else:
+                    self._io_ok()
+                    return
 
     def send_line(self, line: str) -> None:
         """Queue a line for transmission under flow control."""
@@ -174,12 +186,16 @@ class Streamer:
             cost = len(line) + 1
             if self.pending_bytes + cost >= self.rx_buffer:
                 return  # no room; wait for an `ok` to free some
-            self._outbox.popleft()
             try:
                 self.transport.write((line + "\n").encode())
             except OSError as exc:
-                self._drop(str(exc))
+                # The line stays at the head of the outbox and goes out on
+                # the next pump. Dropping it would leave the job waiting for
+                # an `ok` that can never come.
+                self._io_failed(exc)
                 return
+            self._io_ok()
+            self._outbox.popleft()
             self._pending.append(cost)
             self._on_event(SentEvent(line))
 
@@ -193,8 +209,9 @@ class Streamer:
             try:
                 chunk = self.transport.read_available()
             except OSError as exc:
-                self._drop(str(exc))
+                self._io_failed(exc)
                 return
+            self._io_ok()
 
             if chunk:
                 self._partial += chunk.decode(errors="replace")
@@ -211,8 +228,6 @@ class Streamer:
 
         status = parse_status(line)
         if status is not None:
-            self._awaiting_status_since = None
-            self.missed_polls = 0
             # Snapshot "nothing of ours is unaccounted for" AT DISPATCH, in
             # stream order, and hand it to the consumer as part of the
             # report itself. Reading it later, separately, would not be the
@@ -280,10 +295,9 @@ class Streamer:
                         now = time.monotonic()
                         if now - self._last_poll >= interval:
                             self._last_poll = now
-                            if self._awaiting_status_since is None:
-                                self._awaiting_status_since = now
+                            # No watchdog on the reply: a controller that
+                            # misses a report is left to answer the next.
                             self.send_realtime(Realtime.STATUS)
-                        self._check_poll_timeout(now)
                     time.sleep(0.005)
             except Exception as exc:  # noqa: BLE001 - must never die silently
                 self._drop(f"internal error in streamer loop: {exc}")
@@ -297,20 +311,16 @@ class Streamer:
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
 
-    def _check_poll_timeout(self, now: float) -> None:
-        """Three unanswered `?` polls at poll_timeout each means the link is gone."""
-        started = self._awaiting_status_since
-        if started is None:
-            return
-        if now - started < self.poll_timeout:
-            return
-        self._awaiting_status_since = now
-        self.missed_polls += 1
-        if self.missed_polls >= self.max_missed_polls:
-            self._drop(
-                f"no response to {self.max_missed_polls} status polls "
-                f"({self.max_missed_polls * self.poll_timeout:.1f}s)"
-            )
+    def _io_ok(self) -> None:
+        self._failing_since = None
+
+    def _io_failed(self, exc: OSError) -> None:
+        """Note a failed read or write; drop the link only if it persists."""
+        now = time.monotonic()
+        if self._failing_since is None:
+            self._failing_since = now
+        if now - self._failing_since >= self.error_grace:
+            self._drop(str(exc))
 
     def _drop(self, reason: str) -> None:
         """Declare the link dead: halt the controller and let go of the port.
