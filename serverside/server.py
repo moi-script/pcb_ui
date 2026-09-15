@@ -102,9 +102,13 @@ def release_the_machine() -> None:
         pass
 
 # The browser (Next.js dev server) runs on some localhost port; allow any.
+# A hosted deploy adds its frontend with TRACEWORKS_CORS_ORIGIN_REGEX.
+_cors_origins = r"http://localhost:\d+"
+if os.environ.get("TRACEWORKS_CORS_ORIGIN_REGEX"):
+    _cors_origins += "|" + os.environ["TRACEWORKS_CORS_ORIGIN_REGEX"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://localhost:\d+",
+    allow_origin_regex=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
