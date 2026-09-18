@@ -102,6 +102,20 @@ export default function Connect() {
             </p>
           </div>
 
+          {snap?.job?.resumable && snap.job.state === "error" && (
+            <div className="mt-8 border border-copper px-4 py-3 text-sm">
+              <p className="text-ink">
+                &apos;{snap.job.name}&apos; was cut off at line {snap.job.acked}{" "}
+                of {snap.job.total} when the USB link dropped.
+              </p>
+              <p className="mt-1 text-xs text-muted">
+                Don&apos;t move the pen. Reconnect, then open the board and press
+                Resume — it carries on from line {snap.job.resumeFrom}, not from
+                the top.
+              </p>
+            </div>
+          )}
+
           {connected && (
             <div className="mt-8 border border-copper px-4 py-3 text-sm">
               <p className="text-ink">

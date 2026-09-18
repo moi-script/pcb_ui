@@ -111,6 +111,13 @@ export type JobSnapshot = {
   eta: number | null;
   /** The G-code line at the front of the controller's queue. */
   line: string;
+  /**
+   * The USB link died under this plot. The controller drew out what it held
+   * and stopped; after a reconnect the plot can carry on from there.
+   */
+  resumable: boolean;
+  /** 1-based line a resume starts from: the pen-up opening the cut stroke. */
+  resumeFrom: number | null;
 };
 
 export type Origin = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -276,6 +283,16 @@ export const api = {
   pauseJob: () => req<{ ok: boolean }>("/machine/pause", { method: "POST" }),
   resumeJob: () => req<{ ok: boolean }>("/machine/resume", { method: "POST" }),
   stopJob: () => req<{ ok: boolean }>("/machine/stop", { method: "POST" }),
+  /**
+   * Carry on a plot a lost USB link cut off, from where the pen stopped. The
+   * server restores the plot's work frame around the stop point (unless you
+   * zeroed X/Y yourself since reconnecting) and starts at the cut stroke.
+   */
+  resumeInterrupted: () =>
+    req<{ ok: boolean; total: number; from: number }>(
+      "/machine/resume-interrupted",
+      { method: "POST" }
+    ),
   /**
    * Stop and run the same file again from line 1. The server feed-holds,
    * resets the controller from rest (no queue to drain), lifts the pen and
