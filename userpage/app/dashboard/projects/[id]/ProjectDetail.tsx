@@ -8,6 +8,7 @@ import PcbBoard from "@/components/PcbBoard";
 import InlineEdit from "@/components/InlineEdit";
 import RetracePanel from "@/components/RetracePanel";
 import MachineConsole from "@/components/MachineConsole";
+import { DropCard, DropHistoryStrip } from "@/components/DropReport";
 import { useAuth } from "@/lib/auth";
 import { api, type Board } from "@/lib/api";
 import { useMachine } from "@/lib/machine";
@@ -508,17 +509,24 @@ function PlotControl({
   }
 
   if (!connected) {
+    // A drop ends the connection too, so this is where its report has to
+    // show: the one moment the operator most needs to see it.
+    const dropped = mine && job?.state === "error" ? job.disconnect : null;
     return (
       <div className="panel ticked p-5">
         <span className="tlabel">Plot this board</span>
         <p className="mt-3 text-sm text-muted">
-          {live
-            ? "No machine connected. Plug the controller into this PC over USB and pick its port."
-            : "Not talking to the server. Is the API running on port 8000?"}
+          {!live
+            ? "Not talking to the server. Is the API running on port 8000?"
+            : dropped
+            ? "The machine dropped in the middle of this plot. Reconnect to plot again."
+            : "No machine connected. Plug the controller into this PC over USB and pick its port."}
         </p>
+        {dropped && <DropCard report={dropped} />}
         <Link href="/connect" className="btn btn-copper mt-4 w-full">
-          Connect a machine
+          {dropped ? "Reconnect" : "Connect a machine"}
         </Link>
+        {live && <DropHistoryStrip refresh={job?.disconnect?.at ?? null} />}
       </div>
     );
   }
@@ -700,10 +708,18 @@ function PlotControl({
             Stopped at line {job.acked} of {job.total}.
           </p>
         )}
+        {/* A lost machine gets the full report — which line, which axis,
+            what that points to. Any other failure is a G-code error, and
+            its one line already names the offending line. */}
         {reportable && job && job.state === "error" && (
-          <p className="mt-3 text-sm text-danger">{job.error}</p>
+          job.disconnect ? (
+            <DropCard report={job.disconnect} />
+          ) : (
+            <p className="mt-3 text-sm text-danger">{job.error}</p>
+          )
         )}
         {err && <p className="mt-3 text-sm text-danger">{err}</p>}
+        <DropHistoryStrip refresh={job?.disconnect?.at ?? null} />
       </div>
     </div>
   );

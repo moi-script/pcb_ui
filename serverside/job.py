@@ -81,6 +81,13 @@ class Job:
         self.acked = 0
         self.error: str | None = None
         self.error_line: int | None = None
+        # Set by machine.Session when the link drops or the controller
+        # restarts mid-plot: which line the pen was likely on, and why that
+        # matters. See grbl/trace.py.
+        self.disconnect: dict | None = None
+        # Where the pen stood when the file started, so the drop report can
+        # replay the file's moves from the right place.
+        self.origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._check_on = False
         # `$C` and its closing partner are lines like any other, so GRBL
         # acknowledges them: without discounting those acks, a check-mode job
@@ -241,8 +248,8 @@ class Job:
                     self.state = "error"
                     self.error = f"link lost: {event.reason}"
                     self._finished = time.time()
-                    log.error("%r lost the link at line %d: %s",
-                              self.name, self.acked, event.reason)
+                    log.error("%r lost the link with %d of %d lines accepted: %s",
+                              self.name, self.acked, len(self.lines), event.reason)
             return
 
         if not isinstance(event, ReplyEvent):
@@ -362,4 +369,5 @@ class Job:
                 "elapsed": self.elapsed(),
                 "eta": self.eta(),
                 "line": self.current_line(),
+                "disconnect": self.disconnect,
             }

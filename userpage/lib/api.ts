@@ -111,6 +111,51 @@ export type JobSnapshot = {
   eta: number | null;
   /** The G-code line at the front of the controller's queue. */
   line: string;
+  /** Set when the link dropped or the controller restarted mid-plot. */
+  disconnect: DropReport | null;
+};
+
+/** What the machine was doing when a plot lost it. See serverside/grbl/trace.py. */
+export type DropKind = "z_down" | "z_up" | "draw" | "travel" | "idle" | "unknown";
+
+export type DropReport = {
+  /** Unix seconds. */
+  at: number;
+  job: string;
+  cause: "link_lost" | "controller_reset";
+  /** The OS error, or the restart banner. */
+  reason: string;
+  kind: DropKind;
+  /** Axes the matched line moves, e.g. "XY" or "Z". */
+  axes: string;
+  headline: string;
+  explanation: string;
+  /** 1-based line the pen was most likely on; null when it can't be placed. */
+  line: number | null;
+  code: string;
+  /** Every line whose path passes through the last position. */
+  candidates: number[];
+  confidence: "exact" | "likely" | "none";
+  /** Last reported work position, or null if none arrived. */
+  pos: [number, number, number] | null;
+  state: string;
+  /** Seconds between the last position report and the drop. */
+  statusAge: number | null;
+  acked: number;
+  sent: number;
+  total: number;
+  context: {
+    n: number;
+    code: string;
+    axes: string;
+    role: "before" | "match" | "candidate" | "queued" | "unsent";
+  }[];
+};
+
+export type DropHistory = {
+  /** Newest first, at most 20. */
+  reports: DropReport[];
+  tally: Record<DropKind, number>;
 };
 
 export type Origin = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -276,6 +321,9 @@ export const api = {
   pauseJob: () => req<{ ok: boolean }>("/machine/pause", { method: "POST" }),
   resumeJob: () => req<{ ok: boolean }>("/machine/resume", { method: "POST" }),
   stopJob: () => req<{ ok: boolean }>("/machine/stop", { method: "POST" }),
+  drops: () => req<DropHistory>("/machine/disconnects"),
+  clearDrops: () =>
+    req<{ ok: boolean }>("/machine/disconnects", { method: "DELETE" }),
   /**
    * Stop and run the same file again from line 1. The server feed-holds,
    * resets the controller from rest (no queue to drain), lifts the pen and

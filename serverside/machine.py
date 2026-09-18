@@ -20,7 +20,8 @@ from grbl.limits import AXIS_INDEX, LimitError, check_jog
 from grbl.profile import DEFAULT_PROFILE, Profile, with_setup
 from grbl.protocol import Realtime
 from grbl.state import MachineState
-from grbl.streamer import ReplyEvent, Streamer, Transport
+from grbl.streamer import DisconnectedEvent, ReplyEvent, Streamer, Transport
+from grbl.trace import DropHistory, build_report
 from job import Job
 
 BANNER_TIMEOUT = 3.0
@@ -30,10 +31,17 @@ log = logging.getLogger("traceworks.machine")
 
 def default_setup_path() -> Path:
     """Where the operator's machine setup (bed, corner, reversed axes) lives."""
+    return _data_path("machine_setup.json")
+
+
+def default_drops_path() -> Path:
+    """Where the reports of plots that lost the machine are kept."""
+    return _data_path("disconnects.json")
+
+
+def _data_path(name: str) -> Path:
     base = os.environ.get("TRACEWORKS_DATA_DIR")
-    return Path(base) / "machine_setup.json" if base else (
-        Path(__file__).resolve().parent / "machine_setup.json"
-    )
+    return Path(base) / name if base else Path(__file__).resolve().parent / name
 
 
 SIM_PORT = "SIM"
@@ -205,7 +213,8 @@ class Session:
 
     profile: Profile
 
-    def __init__(self, setup_path: Path | None = None) -> None:
+    def __init__(self, setup_path: Path | None = None,
+                 drops_path: Path | None = None) -> None:
         # `setup_path` None keeps the setup in memory only (tests); the
         # module-level session persists it, so a reversed axis stays
         # reversed across restarts of the app.
@@ -216,6 +225,8 @@ class Session:
         self._banner = threading.Event()
         self.streamer: Streamer | None = None
         self.job: Job | None = None
+        # Every plot that lost the machine, newest last. See grbl/trace.py.
+        self.drops = DropHistory(drops_path)
 
         # `_planned` tracks the end of the last jog we validated and sent —
         # the planner's queued target, not the live reported position. Jogs
@@ -319,6 +330,7 @@ class Session:
         if self.job is not None and self.job.state in ("running", "paused"):
             raise HTTPException(409, "A job is already running.")
         job = Job(lines, streamer, check=check, name=name)
+        job.origin = tuple(self.state.wpos)
         self.job = job
         self.state.job_source = job.snapshot
         job.start()
@@ -483,13 +495,51 @@ class Session:
         # The job first: it counts acknowledgements, and an `ok` it does not
         # see is a line of progress the operator never gets back.
         job = self.job
+        live = job is not None and job.state in ("running", "paused")
         if job is not None:
             job.on_streamer_event(event)
+        # Before state.apply(): a DisconnectedEvent wipes the machine state,
+        # and the last position it holds is the whole point of the report.
+        if live and job.state == "error":
+            if isinstance(event, DisconnectedEvent):
+                self._report_drop(job, "link_lost", event.reason)
+            elif isinstance(event, ReplyEvent) and event.reply.kind == "banner":
+                self._report_drop(job, "controller_reset", event.reply.text)
         self.state.apply(event)
         if isinstance(event, ReplyEvent) and event.reply.kind == "banner":
             self._banner.set()
         if isinstance(event, ReplyEvent) and event.reply.kind in ("alarm", "error"):
             self.taint_planned()
+
+    def _report_drop(self, job: Job, cause: str, reason: str) -> None:
+        """Work out what the machine was doing when the plot lost it.
+
+        Runs on the streamer thread with its lock held, so it must not
+        raise: a report that fails to build costs the report, not the
+        disconnect handling around it.
+        """
+        try:
+            state = self.state
+            seen = state.status_at is not None
+            report = build_report(
+                lines=job.lines,
+                acked=job.acked,
+                sent=job.sent,
+                job_name=job.name,
+                cause=cause,
+                reason=reason,
+                pos=list(state.wpos) if seen else None,
+                machine_state=state.state,
+                status_age=time.time() - state.status_at if seen else None,
+                origin=job.origin,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("could not build the drop report for %r", job.name)
+            return
+        job.disconnect = report
+        self.drops.add(report)
+        log.error("%r: %s. %s", job.name, report["headline"],
+                  f"[{report['code']}]" if report["code"] else "")
 
     def connect(self, transport: Transport, port: str, baud: int) -> str:
         self.disconnect()
@@ -848,4 +898,4 @@ class Session:
             return target
 
 
-session = Session(default_setup_path())
+session = Session(default_setup_path(), default_drops_path())

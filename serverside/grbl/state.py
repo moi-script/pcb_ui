@@ -28,6 +28,7 @@ visible disconnect rather than a silent, permanently stale snapshot.
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable
@@ -114,6 +115,10 @@ class MachineState:
         # same atomic snapshot() as `state` and `mpos`.
         self.status_quiet = False
 
+        # Wall-clock time the last status report was applied, so a drop
+        # report can say how old its "last known position" is.
+        self.status_at: float | None = None
+
     # --- mutation ----------------------------------------------------------
 
     def _touch(self) -> None:
@@ -185,6 +190,7 @@ class MachineState:
         self._touch()
         self._status_seq += 1
         self.status_quiet = event.quiet
+        self.status_at = time.time()
         # Status reports are NOT logged: at 5 Hz they would bury everything else.
 
     def _apply_reply(self, event: ReplyEvent) -> None:

@@ -29,3 +29,4 @@ desktop/dist/
 
 # Operator machine setup written by the dev server (bed, corner, reversed axes)
 serverside/machine_setup.json
+serverside/disconnects.json

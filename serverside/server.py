@@ -31,6 +31,7 @@ Endpoints:
     POST /machine/jog | jog/cancel | home | unlock | zero | command | estop
     POST /machine/run          {board_id, check} -> stream a board's G-code
     POST /machine/pause | resume | stop
+    GET  /machine/disconnects  -> drop reports + tally; DELETE clears them
 
 Trace modes: centerline (down the middle of each stroke), outline (around each
 shape), fill (outline plus hatching — the one that actually covers copper for
@@ -793,6 +794,19 @@ def machine_setup_put(body: SetupRequest):
 @app.get("/machine/state")
 def machine_state():
     return session.state.snapshot()
+
+
+@app.get("/machine/disconnects")
+def machine_disconnects():
+    """Reports of plots that lost the machine: newest first, and a count
+    per kind of motion it was doing, so a pattern shows (see grbl/trace.py)."""
+    return session.drops.snapshot()
+
+
+@app.delete("/machine/disconnects")
+def machine_disconnects_clear():
+    session.drops.clear()
+    return {"ok": True}
 
 
 @app.post("/machine/jog")
