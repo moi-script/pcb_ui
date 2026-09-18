@@ -38,8 +38,12 @@ CONFIG = {
     # defaults.h). Grbl clamps a faster F without a word, so asking for more
     # changes nothing on the machine and only makes estimates wrong. Raise
     # these together with $110/$111 if the 28BYJ-48s keep up.
+    #
+    # Drawing runs well below that cap: at 500, and still at 350, the
+    # 28BYJ-48s can lose steps and the plotted board drifts from the layout. Travel is a G0, which Grbl runs
+    # at $110/$111 whatever F says, so travel_feed only feeds the estimate.
     "travel_feed": 500,     # speed for pen-up moves (mm/min)
-    "draw_feed": 500,       # speed while drawing (mm/min)
+    "draw_feed": 100,       # speed while drawing (mm/min)
     "flip_y": False,        # set True if your machine's Y is inverted vs KiCad
     "layer": "F.Cu",        # which copper layer to plot ("F.Cu", "B.Cu", or None for all)
     "optimize": True,       # reorder tracks to minimise pen-up travel

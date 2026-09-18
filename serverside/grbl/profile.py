@@ -41,8 +41,9 @@ class Profile:
     servo_up: int = 0
     servo_down: int = 255
     # grbl_servo_z's $110-$112 are 500 mm/min; Grbl clamps anything above.
+    # Drawing runs slower so the 28BYJ-48s keep up (see pcb_gcode.CONFIG).
     travel_feed: float = 500.0
-    draw_feed: float = 500.0
+    draw_feed: float = 100.0
     # 1 mm of Z at F200 is 300 ms, the SG90's travel budget. The pen lift
     # after a stop uses this, so a faster Z would leave the pen dragging.
     z_feed: float = 200.0
