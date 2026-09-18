@@ -15,7 +15,7 @@ pyserial
 numpy
 pillow
 scikit-image
-opencv-python-headless
+opencv-python
 
 # Tests
 pytest

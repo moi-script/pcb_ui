@@ -469,8 +469,6 @@ function PlotControl({
   const active = running || paused;
   const mine = job?.name === boardName;
   const reportable = Boolean(job && mine && job.state !== "idle");
-  // A plot the USB link cut off: it picks up where the pen stopped.
-  const resumable = Boolean(job && mine && job.state === "error" && job.resumable);
 
   const total = job?.total || gcodeLines;
   const acked = job?.acked ?? 0;
@@ -494,9 +492,7 @@ function PlotControl({
     : job.state === "stopped"
     ? "Stopped. The moves already inside the controller were allowed to drain."
     : job.state === "error"
-    ? job.resumable
-      ? "The USB link dropped. The machine finished the moves it already had and stopped — resume to carry on from there."
-      : "Failed. Nothing further was sent."
+    ? "Failed. Nothing further was sent."
     : "";
 
   async function guard(fn: () => Promise<unknown>) {
@@ -516,11 +512,9 @@ function PlotControl({
       <div className="panel ticked p-5">
         <span className="tlabel">Plot this board</span>
         <p className="mt-3 text-sm text-muted">
-          {!live
-            ? "Not talking to the server. Is the API running on port 8000?"
-            : resumable
-            ? `The link dropped at line ${job?.acked} of ${job?.total}. Let the machine finish its last moves, then reconnect: the plot carries on from line ${job?.resumeFrom}, not from the top.`
-            : "No machine connected. Plug the controller into this PC over USB and pick its port."}
+          {live
+            ? "No machine connected. Plug the controller into this PC over USB and pick its port."
+            : "Not talking to the server. Is the API running on port 8000?"}
         </p>
         <Link href="/connect" className="btn btn-copper mt-4 w-full">
           Connect a machine
@@ -680,26 +674,6 @@ function PlotControl({
               lifts the pen, waits for the machine to stop, keeps work zero
             </p>
           </div>
-        ) : resumable ? (
-          <div className="space-y-1.5">
-            <button
-              className="btn btn-copper w-full"
-              disabled={busy}
-              onClick={() => guard(() => api.resumeInterrupted())}
-            >
-              {busy ? "resuming…" : `Resume from line ${job?.resumeFrom}`}
-            </button>
-            <p className="pt-0.5 text-center font-mono text-[0.7rem] text-faint">
-              pen stays where it stopped · redraws the cut stroke · keeps the plot&apos;s zero
-            </p>
-            <button
-              onClick={() => guard(() => api.run(boardId, check))}
-              disabled={busy}
-              className="btn btn-ghost w-full"
-            >
-              Discard and plot from the pen
-            </button>
-          </div>
         ) : (
           <button
             onClick={() => guard(() => api.run(boardId, check))}
@@ -726,7 +700,7 @@ function PlotControl({
             Stopped at line {job.acked} of {job.total}.
           </p>
         )}
-        {reportable && job && job.state === "error" && !job.resumable && (
+        {reportable && job && job.state === "error" && (
           <p className="mt-3 text-sm text-danger">{job.error}</p>
         )}
         {err && <p className="mt-3 text-sm text-danger">{err}</p>}

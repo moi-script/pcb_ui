@@ -21,7 +21,7 @@ from grbl.profile import DEFAULT_PROFILE, Profile, with_setup
 from grbl.protocol import Realtime
 from grbl.state import MachineState
 from grbl.streamer import ReplyEvent, Streamer, Transport
-from job import Job, modal_preamble
+from job import Job
 
 BANNER_TIMEOUT = 3.0
 
@@ -216,12 +216,6 @@ class Session:
         self._banner = threading.Event()
         self.streamer: Streamer | None = None
         self.job: Job | None = None
-        # Where the pen stopped when the link died, in the lost plot's work
-        # frame, waiting to be restored on resume. Set when a reconnect
-        # rebooted the board under an interrupted plot (machine position
-        # restarts at 0 wherever the pen is); cleared when the operator sets
-        # a zero of their own, which then is the frame to trust.
-        self.resume_anchor: tuple[float, float] | None = None
 
         # `_planned` tracks the end of the last jog we validated and sent —
         # the planner's queued target, not the live reported position. Jogs
@@ -325,41 +319,6 @@ class Session:
         if self.job is not None and self.job.state in ("running", "paused"):
             raise HTTPException(409, "A job is already running.")
         job = Job(lines, streamer, check=check, name=name)
-        self.resume_anchor = None
-        self.job = job
-        self.state.job_source = job.snapshot
-        job.start()
-        return job
-
-    def resume_interrupted(self) -> Job:
-        """Carry on a plot whose USB link died, from where the pen stopped.
-
-        The controller drew out the lines it already held and stopped at the
-        end of the last one; reconnecting rebooted it there, with machine
-        position back at 0. So: restore the old work frame around that spot,
-        put back the modes the skipped lines had set, lift the pen, and
-        stream the file from the start of the stroke that was cut off.
-        """
-        streamer = self.require()
-        old = self.job
-        if old is None or not old.resumable or old.state in ("running", "paused"):
-            raise HTTPException(409, "There is no interrupted plot to resume.")
-
-        start, (px, py) = old.resume_plan()
-        if self.resume_anchor is not None:
-            # G10 L2 sets the offset itself: work = machine - offset, and
-            # machine was 0 with the pen at (px, py). Jogs made since the
-            # reconnect moved machine and work together, so they still agree.
-            streamer.send_line(f"G10 L2 P1 X{-px:g} Y{-py:g} Z0")
-            self.resume_anchor = None
-        self.taint_planned()
-
-        preamble = modal_preamble(old.lines, start, self.profile.pen_up_z,
-                                  self.profile.z_feed)
-        job = Job(old.lines, streamer, check=False, name=old.name,
-                  start_at=start, preamble=preamble)
-        log.info("resuming %r from line %d of %d (pen stopped at X%g Y%g)",
-                 old.name, start + 1, len(old.lines), px, py)
         self.job = job
         self.state.job_source = job.snapshot
         job.start()
@@ -543,14 +502,9 @@ class Session:
         # connection, alongside the new MachineState.
         link_lock = threading.RLock()
 
-        # A plot the last link dropped stays on the books, so it can be
-        # picked up from where it stopped instead of started over.
-        interrupted = self.job if self.job is not None and self.job.resumable else None
-
         self.state = MachineState(self.profile, lock=link_lock)
-        self.job = interrupted
-        self.state.job_source = interrupted.snapshot if interrupted else None
-        self.resume_anchor = None
+        self.job = None
+        self.state.job_source = None
 
         streamer = Streamer(
             transport,
@@ -595,10 +549,6 @@ class Session:
             # heads off to it, far from the board. Start from the pen.
             streamer.send_line("G10 L2 P1 X0 Y0 Z0")
             streamer.send_line("G92.1")
-            if interrupted is not None:
-                # ...and "the pen" is where the lost plot stopped: its frame
-                # goes back on when the operator resumes.
-                self.resume_anchor = interrupted.resume_plan()[1]
         streamer.send_line("$I")
         streamer.send_line("$$")
         streamer.start(poll_hz=5.0)

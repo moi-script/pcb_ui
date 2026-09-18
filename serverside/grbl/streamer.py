@@ -58,10 +58,6 @@ class SentEvent:
 @dataclass
 class DisconnectedEvent:
     reason: str
-    # Lines written to the port but never acknowledged when the link died.
-    # The controller may well have received them and run them: a job that
-    # wants to pick up where the pen stopped has to count them in.
-    unacked: int = 0
 
 
 class Streamer:
@@ -327,29 +323,27 @@ class Streamer:
             self._drop(str(exc))
 
     def _drop(self, reason: str) -> None:
-        """Declare the link dead and let go of the port.
+        """Declare the link dead: halt the controller and let go of the port.
 
-        A port left open is still held by this process, so the operator's
-        next Connect would be refused by Windows with "Access is denied".
-
-        No soft reset on the way out, deliberately. A controller that is
-        still powered goes on to draw out what it already holds -- lines of
-        the plot, a few seconds of them -- and stops where the last one
-        ends. That is a place the job can compute, so a reconnected plot can
-        carry on from it (see Job.resume_plan). A reset that happened to
-        land would stop the pen at a point nobody knows, and a port that has
-        been failing for `error_grace` seconds could deliver it or not.
+        Both halves matter. A controller that merely stopped answering may
+        still be running, and without a reset it draws out everything in its
+        planner and RX buffer — seconds of plotting nobody is watching. And
+        a port left open is still held by this process, so the operator's
+        next Connect is refused by Windows with "Access is denied".
         """
         with self._lock:
             if not self.connected:
                 return
             self.connected = False
-            unacked = len(self._pending)
             self._pending.clear()
             self._outbox.clear()
             self._running = False
             try:
+                self.transport.write(Realtime.SOFT_RESET)
+            except Exception:  # noqa: BLE001 - the link is already gone
+                pass
+            try:
                 self.transport.close()
             except Exception:  # noqa: BLE001
                 pass
-            self._on_event(DisconnectedEvent(reason, unacked=unacked))
+            self._on_event(DisconnectedEvent(reason))

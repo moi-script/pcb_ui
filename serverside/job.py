@@ -13,7 +13,6 @@ named for what they are rather than blended into one dishonest percentage.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 
@@ -53,93 +52,6 @@ def load_lines(text: str) -> list[str]:
     return out
 
 
-# --- picking a plot up again ---------------------------------------------------
-#
-# A plot that loses its USB link is not lost with it. The controller keeps
-# drawing the moves it already holds and stops where the last one ends, and
-# the file says exactly where that is. These read the file to find it; they
-# are pure, so they are tested without a machine.
-
-_WORD = re.compile(r"([A-Z])\s*([+-]?(?:\d+\.?\d*|\.\d+))")
-
-# G-codes whose X/Y words are not a move to that point.
-_NOT_MOTION = {4.0, 10.0, 28.0, 30.0, 53.0, 92.0}
-
-
-def _words(line: str) -> list[tuple[str, float]]:
-    return [(k, float(v)) for k, v in _WORD.findall(line.upper())]
-
-
-def pen_position(lines: list[str], count: int) -> tuple[float, float]:
-    """Work X/Y after the first `count` lines have run, from work zero."""
-    x = y = 0.0
-    absolute = True
-    for line in lines[:max(0, count)]:
-        words = _words(line)
-        gs = {v for k, v in words if k == "G"}
-        if 90.0 in gs:
-            absolute = True
-        if 91.0 in gs:
-            absolute = False
-        if gs & _NOT_MOTION:
-            continue
-        for k, v in words:
-            if k == "X":
-                x = v if absolute else x + v
-            elif k == "Y":
-                y = v if absolute else y + v
-    return x, y
-
-
-def _is_pen_up(line: str) -> bool:
-    """A Z-only move to Z >= 0: grbl_servo_z's pen up (see Profile)."""
-    words = _words(line)
-    if any(k in "XY" for k, _ in words):
-        return False
-    return any(k == "Z" and v >= 0 for k, v in words)
-
-
-def resume_index(lines: list[str], first_unsent: int) -> int:
-    """The line to start again from: the pen-up that opens the current stroke.
-
-    Starting mid-stroke would drop the pen wherever the last move happened
-    to end. Going back to the pen-up before it redraws a little of a line
-    already drawn, which a pen does not mind, and then travels to the next
-    stroke the way the file always did.
-    """
-    i = min(first_unsent, len(lines) - 1)
-    while i > 0 and not _is_pen_up(lines[i]):
-        i -= 1
-    return max(i, 0)
-
-
-def modal_preamble(lines: list[str], index: int, pen_up_z: float,
-                   z_feed: float) -> list[str]:
-    """What the file had set up by `index`, then the pen lifted.
-
-    A rebooted controller has forgotten the units, the distance mode and the
-    feed the skipped lines established, and the line picked up from may rely
-    on any of them.
-    """
-    units, plane, relative, feed = "G21", "G17", False, None
-    for line in lines[:index]:
-        for k, v in _words(line):
-            if k == "G" and v in (20.0, 21.0):
-                units = f"G{v:g}"
-            elif k == "G" and v in (17.0, 18.0, 19.0):
-                plane = f"G{v:g}"
-            elif k == "G" and v in (90.0, 91.0):
-                relative = v == 91.0
-            elif k == "F":
-                feed = v
-    out = [units, plane, "G90", f"G1 Z{pen_up_z:g} F{z_feed:g}"]
-    if relative:
-        out.append("G91")
-    if feed is not None:
-        out.append(f"F{feed:g}")
-    return out
-
-
 class Job:
     """One file, streaming. Not thread-safe to construct twice concurrently —
     the session enforces one at a time."""
@@ -150,8 +62,6 @@ class Job:
         streamer: Streamer,
         check: bool = False,
         name: str = "",
-        start_at: int = 0,
-        preamble: list[str] | None = None,
     ) -> None:
         self.lines = lines
         self.streamer = streamer
@@ -167,13 +77,8 @@ class Job:
         # the nested calls are free. See Streamer.__init__.
         self._lock = streamer._lock
         self.state = "idle"          # idle|running|paused|done|error|stopped
-        # A job picked up after a lost link starts part-way down the file,
-        # with a few lines of its own first to put the controller back in
-        # the state the skipped lines had left it in.
-        self._start_at = start_at
-        self._preamble = list(preamble or [])
-        self.sent = start_at
-        self.acked = start_at
+        self.sent = 0
+        self.acked = 0
         self.error: str | None = None
         self.error_line: int | None = None
         self._check_on = False
@@ -182,12 +87,6 @@ class Job:
         # would count two acknowledgements it never sent file lines for and
         # declare itself done two lines early.
         self._bookkeeping_acks = 0
-
-        # Set when the USB link dies under a real plot: the controller keeps
-        # the moves it had, so the file can carry on from where they end.
-        # `lines_on_wire` is how many file lines had reached the port by then.
-        self.resumable = False
-        self.lines_on_wire: int | None = None
 
         # Wall-clock bookkeeping, for "how long has this been going and how
         # much longer" — reported, not enforced.
@@ -205,15 +104,12 @@ class Job:
             self._started = time.time()
             self._last_log = self._started
             log.info(
-                "%s %r: %d lines%s%s",
+                "%s %r: %d lines%s",
                 "dry-checking" if self.check else "plotting",
                 self.name,
                 len(self.lines),
-                f" from line {self._start_at + 1}" if self._start_at else "",
                 " ($C: parsed and validated, nothing moves)" if self.check else "",
             )
-            for line in self._preamble:
-                self._send_bookkeeping(line)
             if self.check:
                 # $C is a toggle, not a mode flag: it must be sent once here
                 # and once at the end, and the end must happen on every exit
@@ -345,11 +241,6 @@ class Job:
                     self.state = "error"
                     self.error = f"link lost: {event.reason}"
                     self._finished = time.time()
-                    # Our own unacknowledged lines (a resume's preamble, the
-                    # check-mode toggle) are not file lines.
-                    on_wire = max(0, event.unacked - self._bookkeeping_acks)
-                    self.lines_on_wire = min(len(self.lines), self.acked + on_wire)
-                    self.resumable = not self.check
                     log.error("%r lost the link at line %d: %s",
                               self.name, self.acked, event.reason)
             return
@@ -408,16 +299,6 @@ class Job:
                 log.error("%r failed: %s", self.name, self.error)
                 self._end_check_mode()
 
-    def resume_plan(self) -> tuple[int, tuple[float, float]]:
-        """(line to start from, where the pen stopped), for a lost link.
-
-        The controller draws out every line it had received, so the pen
-        ends where the last one on the wire ends.
-        """
-        with self._lock:
-            on_wire = self.lines_on_wire if self.lines_on_wire is not None else self.acked
-            return resume_index(self.lines, on_wire), pen_position(self.lines, on_wire)
-
     # --- reporting ---------------------------------------------------------
 
     def elapsed(self) -> float | None:
@@ -434,13 +315,12 @@ class Job:
         estimate and never used to decide anything.
         """
         elapsed = self.elapsed()
-        done = self.acked - self._start_at
-        if not elapsed or self.state != "running" or done <= 0:
+        if not elapsed or self.state != "running" or self.acked <= 0:
             return None
         remaining = len(self.lines) - self.acked
         if remaining <= 0:
             return 0.0
-        return remaining * (elapsed / done)
+        return remaining * (elapsed / self.acked)
 
     def current_line(self) -> str:
         """The line the controller is working on next.
@@ -482,9 +362,4 @@ class Job:
                 "elapsed": self.elapsed(),
                 "eta": self.eta(),
                 "line": self.current_line(),
-                "resumable": self.resumable,
-                "resumeFrom": (
-                    resume_index(self.lines, self.lines_on_wire) + 1
-                    if self.resumable and self.lines_on_wire is not None else None
-                ),
             }

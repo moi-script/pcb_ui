@@ -31,7 +31,6 @@ Endpoints:
     POST /machine/jog | jog/cancel | home | unlock | zero | command | estop
     POST /machine/run          {board_id, check} -> stream a board's G-code
     POST /machine/pause | resume | stop
-    POST /machine/resume-interrupted -> carry on a plot a lost link cut off
 
 Trace modes: centerline (down the middle of each stroke), outline (around each
 shape), fill (outline plus hatching — the one that actually covers copper for
@@ -103,13 +102,9 @@ def release_the_machine() -> None:
         pass
 
 # The browser (Next.js dev server) runs on some localhost port; allow any.
-# A hosted deploy adds its frontend with TRACEWORKS_CORS_ORIGIN_REGEX.
-_cors_origins = r"http://localhost:\d+"
-if os.environ.get("TRACEWORKS_CORS_ORIGIN_REGEX"):
-    _cors_origins += "|" + os.environ["TRACEWORKS_CORS_ORIGIN_REGEX"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=_cors_origins,
+    allow_origin_regex=r"http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -942,9 +937,6 @@ def machine_zero(body: ZeroRequest) -> dict:
                  "Z offset would leave the pen down between traces. Zero X "
                  "and Y only.")
     streamer.send_line(encode_zero(axes))
-    # A zero set by hand after a lost link is the operator re-finding the
-    # plot's corner: resuming must trust it over the computed stop point.
-    session.resume_anchor = None
     # G10 L20 itself doesn't move the machine, but this route can't prove a
     # jog isn't still draining through the queue underneath it (the ZERO
     # buttons sit in the same jog panel and are clickable mid-jog). Taint
@@ -1092,13 +1084,6 @@ def machine_pause():
 def machine_resume():
     session.require_job().resume()
     return {"ok": True}
-
-
-@app.post("/machine/resume-interrupted")
-def machine_resume_interrupted():
-    """Pick a plot whose USB link died back up from where the pen stopped."""
-    job = session.resume_interrupted()
-    return {"ok": True, "total": len(job.lines), "from": job.acked + 1}
 
 
 @app.post("/machine/stop")
