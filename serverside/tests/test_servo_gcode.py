@@ -145,7 +145,8 @@ class TestJobShape:
 
 
 class TestAgainstARealBoard:
-    def test_a_routed_kicad_board_plunges_once_per_track(self):
+    def test_a_routed_kicad_board_plunges_once_per_stroke(self):
+        """Every segment is drawn, but joined segments share one pen drop."""
         board = "labExam.kicad_pcb"
         with open(board, encoding="utf-8", errors="replace") as f:
             wiring = extract_wiring(f.read())
@@ -153,7 +154,20 @@ class TestAgainstARealBoard:
         tracks = [w for w in wiring
                   if w["type"] == "track" and w["layer"] == "F.Cu"]
         plunges = [z for _m, z, _f in z_moves(lines) if z < 0]
-        assert len(plunges) == len(tracks)
+        draws = [l for l in lines if l.startswith("G1 X")]
+
+        assert len(draws) == len(tracks)
+        assert len(plunges) < len(tracks)
+        # And no lift is wasted: every travel goes somewhere the pen is not.
+        pos = None
+        for line in lines:
+            m = re.match(r"G([01]) X(-?[\d.]+) Y(-?[\d.]+)", line)
+            if not m:
+                continue
+            here = (float(m.group(2)), float(m.group(3)))
+            if m.group(1) == "0" and pos is not None:
+                assert here != pos, f"lifted only to land again at {here}"
+            pos = here
 
 
 # --------------------------------------------------------------- the bed

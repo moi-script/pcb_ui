@@ -5,8 +5,10 @@ plot runs down from it in -Y. See `_to_origin`.
 
 Flow:  KiCad file  ->  pcb_read.wiring_data  ->  G-code  ->  GRBL (grbl_servo_z)
 
-Each track segment becomes a pen-up travel to its start, a pen-down, a draw
-to its end, then a pen-up. Coordinates are passed straight through in mm.
+Segments that join end to end are drawn as one stroke: a pen-up travel to its
+start, a pen-down, a draw along every segment, then a pen-up. The pen lifts
+only where the next segment starts somewhere else. Coordinates are passed
+straight through in mm.
 
 This targets a SINGLE-LAYER plot by default (front copper), which is the
 common case for the mini / hobby projects this tool is aimed at.
@@ -69,6 +71,18 @@ def _to_origin(pairs):
 
 def _dist(a, b):
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+
+# How close the next segment's start must be to the pen for the pen to stay
+# down. KiCad stores a joint as one shared point, so a real joint is within
+# float noise of zero; 0.001 mm absorbs that and nothing else. Any wider and
+# the pen would bridge a genuine gap on the board.
+JOIN_MM = 0.001
+
+
+def _joins(a, b):
+    return _dist(a, b) <= JOIN_MM
+
 
 
 def optimize_order(tracks, start=(0.0, 0.0)):
@@ -157,13 +171,21 @@ def generate_gcode(data, cfg=CONFIG):
         f"G1 Z{up:g} F{zf}",   # start with pen up
     ]
 
+    pos = None
     for (x0, y0), (x1, y1) in pairs:
-        lines += [
-            f"G0 X{x0:g} Y{_y(y0):g} F{tf}",   # travel to start (pen up)
-            f"G1 Z{down:g} F{zf}",             # pen down
-            f"G1 X{x1:g} Y{_y(y1):g} F{df}",   # draw the trace
-            f"G1 Z{up:g} F{zf}",               # pen up
-        ]
+        # A segment that starts where the last one ended continues the same
+        # stroke: lifting there would only drop the pen back on the spot.
+        if pos is None or not _joins(pos, (x0, y0)):
+            if pos is not None:
+                lines.append(f"G1 Z{up:g} F{zf}")        # pen up
+            lines += [
+                f"G0 X{x0:g} Y{_y(y0):g} F{tf}",         # travel to start (pen up)
+                f"G1 Z{down:g} F{zf}",                   # pen down
+            ]
+        lines.append(f"G1 X{x1:g} Y{_y(y1):g} F{df}")    # draw the trace
+        pos = (x1, y1)
+    if pos is not None:
+        lines.append(f"G1 Z{up:g} F{zf}")                # pen up
 
     lines += [
         "G0 X0 Y0 F%d" % tf,   # return home

@@ -226,10 +226,14 @@ def build_board(wiring: list, name: str, filename: str) -> dict:
     pairs_raw = [(w["start"], w["end"]) for w in layer_tracks]
     pen_up_before = round(travel_distance(pairs_raw))
     pen_up_after = round(travel_distance(optimize_order(layer_tracks)))
+    # Joined segments plot as one stroke, so count the pen drops the file
+    # really makes rather than the segments.
+    pen_down = f"G1 Z{cfg['pen_down_z']:g} "
+    strokes = sum(1 for line in gcode_lines if line.startswith(pen_down))
     draw_len = sum(_dist(w["start"], w["end"]) for w in layer_tracks)
     # rough time: draw + travel at their feeds, plus a pen drop and lift
-    # (1 mm of Z each, at z_feed) per track
-    pen_moves = len(layer_tracks) * 2 * abs(cfg["pen_up_z"] - cfg["pen_down_z"])
+    # (1 mm of Z each, at z_feed) per stroke
+    pen_moves = strokes * 2 * abs(cfg["pen_up_z"] - cfg["pen_down_z"])
     est_minutes = max(
         1,
         math.ceil(draw_len / cfg["draw_feed"]
@@ -250,7 +254,8 @@ def build_board(wiring: list, name: str, filename: str) -> dict:
         "gcode": "\n".join(gcode_lines) + "\n",
         "gcodeLines": len(gcode_lines),
         "drawMoves": len(layer_tracks),
-        "travelMoves": len(layer_tracks) + 1,
+        # one travel to the start of each stroke, and one back home
+        "travelMoves": strokes + 1,
         "penUpBefore": pen_up_before,
         "penUpAfter": pen_up_after,
         "size": f"{width} × {height}",
